@@ -1,10 +1,11 @@
 //! Qué es "el juego": el proceso de la ventana activa que ocupa todo su monitor
 //! (pantalla completa o ventana sin bordes), salvo programas que no son juegos.
-//! Lo usan la elección del monitor a grabar, el modo "Solo juegos" (imagen) y el canal de audio "Juego".
-//! Una vez detectado queda fijo mientras siga abierto, aunque hagas Alt+Tab.
+//! Lo usan la elección del monitor a grabar, el modo "Solo juegos" (imagen y carpeta del clip) y el canal de
+//! audio "Juego". Una vez detectado queda fijo mientras siga abierto, aunque hagas Alt+Tab.
 
-use windows::core::PWSTR;
+use windows::core::{w, HSTRING, PWSTR};
 use windows::Win32::Foundation::{CloseHandle, HANDLE, HWND, RECT};
+use windows::Win32::Storage::FileSystem::{GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW};
 use windows::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
 };
@@ -33,7 +34,8 @@ const STILL_ACTIVE: u32 = 259;
 
 struct Proc {
     pid: u32,
-    exe: String,
+    /// El ProductName del ejecutable (ej. "VALORANT") o, si no tiene, su nombre sin ".exe".
+    name: String,
     handle: HANDLE,
     /// Última ventana del juego que estuvo adelante en pantalla completa (dice en qué monitor está).
     window: HWND,
@@ -80,13 +82,13 @@ impl Detector {
                     g.window = window;
                     self.in_front = true;
                 } else if pid != self.not_game {
-                    match open(pid, window) {
-                        Some(p) if is_game(&p.exe) => {
+                    match open_game(pid, window) {
+                        Some(p) => {
                             self.game = Some(p);
                             self.in_front = true;
                             changed = true;
                         }
-                        _ => self.not_game = pid,
+                        None => self.not_game = pid,
                     }
                 }
             }
@@ -98,9 +100,9 @@ impl Detector {
         self.game.as_ref().map(|g| g.pid)
     }
 
-    /// Nombre del ejecutable sin ".exe" (ej. "VALORANT-Win64-Shipping").
+    /// Nombre del juego (ej. "VALORANT").
     pub fn name(&self) -> Option<String> {
-        self.game.as_ref().map(|g| g.exe.clone())
+        self.game.as_ref().map(|g| g.name.clone())
     }
 
     /// Monitor del juego, si está abierto y no minimizado.
@@ -147,12 +149,15 @@ fn is_game(exe: &str) -> bool {
     !exe.is_empty() && !NOT_GAMES.iter().any(|n| exe.eq_ignore_ascii_case(n))
 }
 
-fn open(pid: u32, window: HWND) -> Option<Proc> {
+/// El proceso `pid`, si es un juego.
+fn open_game(pid: u32, window: HWND) -> Option<Proc> {
     if pid == 0 || pid == std::process::id() {
         return None;
     }
     unsafe {
         let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).unwrap_or_default();
+        // Si no es un juego, al soltarlo se cierra el proceso abierto.
+        let mut p = Proc { pid, name: String::new(), handle, window };
         let mut buf = [0u16; 512];
         let mut len = buf.len() as u32;
         let path = if !handle.is_invalid() && QueryFullProcessImageNameW(handle, PROCESS_NAME_WIN32, PWSTR(buf.as_mut_ptr()), &mut len).is_ok() {
@@ -161,7 +166,12 @@ fn open(pid: u32, window: HWND) -> Option<Proc> {
             // Algunos anticheats no dejan abrir el proceso: el nombre sale de la lista de procesos.
             snapshot().into_iter().find(|(p, _)| *p == pid).map(|(_, n)| n)?
         };
-        Some(Proc { pid, exe: exe_stem(&path), handle, window })
+        let exe = exe_stem(&path);
+        if !is_game(&exe) {
+            return None;
+        }
+        p.name = product_name(&path).unwrap_or(exe);
+        Some(p)
     }
 }
 
@@ -171,6 +181,40 @@ fn exe_stem(path: &str) -> String {
     match file.len().checked_sub(4) {
         Some(n) if file.is_char_boundary(n) && file[n..].eq_ignore_ascii_case(".exe") => file[..n].to_string(),
         _ => file.to_string(),
+    }
+}
+
+/// ProductName del ejecutable: el nombre del juego tal como lo publica, sin una lista para cada uno.
+fn product_name(path: &str) -> Option<String> {
+    if !std::path::Path::new(path).is_absolute() {
+        return None;
+    }
+    unsafe {
+        let path = HSTRING::from(path);
+        let size = GetFileVersionInfoSizeW(&path, None);
+        if size == 0 {
+            return None;
+        }
+        let mut data = vec![0u64; (size as usize).div_ceil(8)];
+        GetFileVersionInfoW(&path, 0, size, data.as_mut_ptr().cast()).ok()?;
+        let block = data.as_ptr().cast();
+        let mut value = std::ptr::null_mut();
+        let mut len = 0;
+        if !VerQueryValueW(block, w!("\\VarFileInfo\\Translation"), &mut value, &mut len).as_bool() || value.is_null() {
+            return None;
+        }
+        let translations = std::slice::from_raw_parts(value.cast::<u16>(), len as usize / 2);
+        for t in translations.as_chunks::<2>().0 {
+            let key = HSTRING::from(format!("\\StringFileInfo\\{:04x}{:04x}\\ProductName", t[0], t[1]));
+            if VerQueryValueW(block, &key, &mut value, &mut len).as_bool() && !value.is_null() && len > 1 {
+                let name = String::from_utf16_lossy(std::slice::from_raw_parts(value.cast::<u16>(), len as usize));
+                let name = name.trim_matches('\0').trim();
+                if !name.is_empty() {
+                    return Some(name.into());
+                }
+            }
+        }
+        None
     }
 }
 

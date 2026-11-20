@@ -524,8 +524,15 @@ pub fn folder_name_ok(name: &str) -> bool {
     !n.is_empty() && !n.ends_with('.') && !n.chars().any(|c| BAD_NAME.contains(c) || c.is_control())
 }
 
+/// `name` como nombre de archivo o carpeta que Windows acepta: los caracteres prohibidos pasan a "_" y se
+/// sacan los espacios y puntos de los bordes. Puede quedar vacío.
+pub fn clean_name(name: &str) -> String {
+    let s: String = name.chars().map(|c| if BAD_NAME.contains(c) || c.is_control() { '_' } else { c }).collect();
+    s.trim_matches(|c: char| c == '.' || c.is_whitespace()).to_string()
+}
+
 /// Caracteres que Windows no deja usar en un nombre de archivo o carpeta.
-pub const BAD_NAME: &str = "<>:\"/\\|?*";
+const BAD_NAME: &str = "<>:\"/\\|?*";
 
 /// "Clippy_2026-11-15_23-38-30" -> "15/11 · 23:38:30" (en inglés, "11/15 · 23:38:30")
 pub fn pretty_name(p: &Path) -> String {

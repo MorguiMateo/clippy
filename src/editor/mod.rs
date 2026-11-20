@@ -4,7 +4,7 @@
 //! Al cerrar la ventana el proceso termina.
 
 mod browser;
-mod library;
+pub mod library;
 mod inspector;
 mod media;
 mod player;
@@ -219,7 +219,7 @@ impl EditorApp {
     fn new(ctx: egui::Context, file: Option<PathBuf>) -> Self {
         let cfg = config::load();
         let imported = library::load_imported();
-        let watcher = Watcher::new(ctx.clone(), vec![crate::log::app_dir(), cfg.output_dir.clone()], false);
+        let watcher = Watcher::new(ctx.clone(), cfg.output_dir.clone(), false);
         let mut app = Self {
             loader: Loader::new(ctx.clone()),
             ctx,
@@ -400,7 +400,7 @@ impl EditorApp {
             if self.cfg.output_dir != dir {
                 self.browser.dir = None;
             }
-            self.watcher.set_dirs(self.watched_dirs());
+            self.watcher.set_clips(&self.cfg.output_dir);
         }
     }
 

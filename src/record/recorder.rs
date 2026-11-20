@@ -18,6 +18,7 @@ use super::encoder::{Device, Encoder, Packet};
 use super::{game, mux};
 use crate::i18n::tr;
 use crate::config::{CaptureMode, Config};
+use crate::editor::library::clean_name;
 use crate::log::{file_stamp, log};
 use crate::mf::{frames_at, Mf};
 use crate::ui_kit::sound;
@@ -476,7 +477,12 @@ fn save_clip(cfg: &Config, packets: &VecDeque<Packet>, enc: &Encoder, au: &Audio
         }
     }
 
-    let dir = cfg.output_dir.clone();
+    // En "Solo juegos" el clip es del juego: va a una carpeta con su nombre. Lo demás, a la de los clips.
+    let game_dir = au.game.name().map(|g| clean_name(&g)).filter(|g| !g.is_empty());
+    let dir = match game_dir {
+        Some(g) if cfg.capture_mode == CaptureMode::GamesOnly => cfg.output_dir.join(g),
+        _ => cfg.output_dir.clone(),
+    };
     let stamp = file_stamp();
     let mut path = dir.join(format!("Clippy_{stamp}.mp4"));
     let mut i = 2;

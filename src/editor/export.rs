@@ -373,7 +373,7 @@ impl EditorApp {
     }
 
     fn start_export(&mut self, d: &ExportDialog, plan: &ExportPlan) {
-        let clean: String = d.name.trim().chars().map(|c| if library::BAD_NAME.contains(c) { '_' } else { c }).collect();
+        let clean = library::clean_name(&d.name);
         let mut out = d.dir.join(format!("{clean}.mp4"));
         let mut n = 2;
         while out.exists() {

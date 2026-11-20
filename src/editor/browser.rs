@@ -173,15 +173,7 @@ impl EditorApp {
         self.browser.sel.clear();
         self.browser.anchor = None;
         self.browser.set_scroll = Some(0.0);
-        self.watcher.set_dirs(self.watched_dirs());
         self.scan();
-    }
-
-    /// Carpetas que se miran por si cambian: la de la app, la de los clips y la que se ve.
-    pub(super) fn watched_dirs(&self) -> Vec<PathBuf> {
-        let mut v = vec![crate::log::app_dir(), self.cfg.output_dir.clone()];
-        v.extend(self.browser.dir.clone());
-        v
     }
 
     /// Lo elegido, en el orden de la lista.

@@ -1,7 +1,7 @@
 //! Ventana principal / ajustes (proceso aparte: `clippy.exe --settings`).
 //! Al cerrarla el proceso termina, así que mientras jugás no ocupa nada.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
 use eframe::egui::{self, Align, Layout, Margin, RichText};
@@ -14,7 +14,6 @@ use crate::app::update;
 use crate::config::{self, Config, GlobalAction};
 use crate::i18n::{self, tr, trf};
 use crate::record::audio;
-use crate::log::app_dir;
 use crate::ui_kit::theme::*;
 use crate::ui_kit::watch::Watcher;
 use crate::ui_kit::window::{maximize_once, single_instance, window_options};
@@ -66,8 +65,8 @@ struct SettingsApp {
     watcher: Watcher,
     mtime: Option<SystemTime>,
     clips: (usize, Option<SystemTime>),
-    /// Carpeta y fecha de la última vez que se contaron los clips.
-    clips_seen: Option<(std::path::PathBuf, Option<SystemTime>)>,
+    /// Carpeta de los clips y las de cada juego, con sus fechas, la última vez que se contaron.
+    clips_seen: Vec<(PathBuf, Option<SystemTime>)>,
     mics: Vec<(String, String)>,
     /// Versión nueva disponible y estado de la descarga.
     update: Option<(String, String)>,
@@ -100,7 +99,7 @@ enum Page {
 impl SettingsApp {
     fn new(ctx: egui::Context) -> Self {
         let cfg = config::load();
-        let watcher = Watcher::new(ctx, watched_dirs(&cfg), true);
+        let watcher = Watcher::new(ctx, cfg.output_dir.clone(), true);
         let mut s = Self {
             saved: cfg.clone(),
             prev: cfg.clone(),
@@ -115,7 +114,7 @@ impl SettingsApp {
             watcher,
             mtime: config::config_mtime(),
             clips: (0, None),
-            clips_seen: None,
+            clips_seen: Vec::new(),
             mics: audio::capture_devices(),
             update: None,
             update_status: Default::default(),
@@ -234,7 +233,7 @@ impl SettingsApp {
 
     /// Relee lo que cambia desde afuera (la grabadora, la bandeja, clips nuevos), solo si hubo un aviso.
     fn poll_outside(&mut self) {
-        self.watcher.set_dirs(watched_dirs(&self.cfg));
+        self.watcher.set_clips(&self.cfg.output_dir);
         if !self.watcher.take_changed() {
             return;
         }
@@ -248,10 +247,10 @@ impl SettingsApp {
         // Las novedades quedan listas cuando arranca la grabadora recién actualizada (a veces después
         // de abrir esta ventana, si hubo que bajar el texto).
         self.news = update::news();
-        let seen = (self.cfg.output_dir.clone(), std::fs::metadata(&self.cfg.output_dir).and_then(|m| m.modified()).ok());
-        if self.clips_seen.as_ref() != Some(&seen) {
-            self.clips = count_clips(&self.cfg.output_dir);
-            self.clips_seen = Some(seen);
+        let seen = clip_dirs(&self.cfg.output_dir);
+        if self.clips_seen != seen {
+            self.clips = count_clips(&seen);
+            self.clips_seen = seen;
         }
         // Si se cambió algo desde la bandeja (ej. pausar), reflejarlo acá.
         let m = config::config_mtime();
@@ -416,23 +415,31 @@ impl eframe::App for SettingsApp {
     }
 }
 
-/// Carpetas donde cambian cosas que muestra esta ventana: la de la app (config.json, la grabadora
-/// al arrancar) y la de los clips.
-fn watched_dirs(cfg: &Config) -> Vec<std::path::PathBuf> {
-    vec![app_dir(), cfg.output_dir.clone()]
+/// La carpeta de los clips y las de adentro (un nivel, como la biblioteca), con la fecha en que cambiaron.
+/// La fecha se pide a cada carpeta: la que trae la lista de la de arriba Windows la actualiza tarde.
+fn clip_dirs(root: &Path) -> Vec<(PathBuf, Option<SystemTime>)> {
+    let subdirs = std::fs::read_dir(root).into_iter().flatten().flatten().filter(|e| e.file_type().is_ok_and(|t| t.is_dir()));
+    std::iter::once(root.to_path_buf())
+        .chain(subdirs.map(|e| e.path()))
+        .map(|d| {
+            let m = std::fs::metadata(&d).and_then(|m| m.modified()).ok();
+            (d, m)
+        })
+        .collect()
 }
 
-fn count_clips(dir: &Path) -> (usize, Option<SystemTime>) {
-    let Ok(rd) = std::fs::read_dir(dir) else { return (0, None) };
+fn count_clips(dirs: &[(PathBuf, Option<SystemTime>)]) -> (usize, Option<SystemTime>) {
     let mut n = 0;
     let mut last = None;
-    for e in rd.flatten() {
-        let p = e.path();
-        if p.extension().is_some_and(|x| x.eq_ignore_ascii_case("mp4")) {
-            n += 1;
-            if let Ok(m) = e.metadata().and_then(|m| m.modified()) {
-                if last.is_none_or(|l| m > l) {
-                    last = Some(m);
+    for (dir, _) in dirs {
+        for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let p = e.path();
+            if p.extension().is_some_and(|x| x.eq_ignore_ascii_case("mp4")) {
+                n += 1;
+                if let Ok(m) = e.metadata().and_then(|m| m.modified()) {
+                    if last.is_none_or(|l| m > l) {
+                        last = Some(m);
+                    }
                 }
             }
         }
