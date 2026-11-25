@@ -41,6 +41,58 @@ impl From<CaptureMode> for &'static str {
     }
 }
 
+/// Formato del video. En config.json se guarda como "h264" / "hevc".
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Debug, Default)]
+#[serde(from = "String", into = "&'static str")]
+pub enum Codec {
+    /// Se reproduce en todos lados.
+    #[default]
+    H264,
+    /// H.265: la misma imagen con menos bits. Solo con el encoder de la placa.
+    Hevc,
+}
+
+/// Con H.265 se codifica a este porcentaje de los Mbps de la calidad elegida: la misma imagen que H.264.
+const HEVC_PERCENT: u32 = 65;
+
+impl Codec {
+    /// "H.264" / "H.265" (nombres técnicos, iguales en todos los idiomas).
+    pub fn label(self) -> &'static str {
+        match self {
+            Codec::H264 => "H.264",
+            Codec::Hevc => "H.265",
+        }
+    }
+
+    /// Bitrate (bits por segundo) para la calidad elegida en Mbps.
+    pub fn bitrate(self, quality_mbps: u32) -> u32 {
+        let percent = match self {
+            Codec::H264 => 100,
+            Codec::Hevc => HEVC_PERCENT,
+        };
+        quality_mbps * percent * 10_000
+    }
+}
+
+impl From<String> for Codec {
+    fn from(s: String) -> Self {
+        if s == "hevc" {
+            Codec::Hevc
+        } else {
+            Codec::H264
+        }
+    }
+}
+
+impl From<Codec> for &'static str {
+    fn from(c: Codec) -> Self {
+        match c {
+            Codec::H264 => "h264",
+            Codec::Hevc => "hevc",
+        }
+    }
+}
+
 /// Duración del clip que se puede elegir. El máximo real de cada PC sale de su RAM (`max_seconds`).
 pub const MIN_SECONDS: u32 = 5;
 pub const MAX_SECONDS: u32 = 600;
@@ -64,7 +116,9 @@ pub struct Config {
     /// MOD_ALT = 1, MOD_CONTROL = 2, MOD_SHIFT = 4
     pub hotkey_mods: u32,
     pub fps: u32,
+    /// Calidad elegida, en los Mbps de H.264 (con H.265 se codifica a menos, ver `Codec::bitrate`).
     pub bitrate_mbps: u32,
+    pub codec: Codec,
     /// Lado corto del video en px (720, 1080, 1440); 0 = como el monitor. Nunca agranda la imagen.
     pub resolution: u32,
     /// Audio del juego (el proceso en pantalla completa que se detecta solo, ver `game`).
@@ -136,6 +190,7 @@ impl Default for Config {
             hotkey_mods: 0,
             fps: 60,
             bitrate_mbps: 30, // "Media"
+            codec: Codec::H264,
             resolution: 0,
             game_audio: true,
             game_volume: 100,
@@ -170,8 +225,8 @@ pub fn fit_short(full: (u32, u32), short: u32) -> (u32, u32) {
 
 impl Config {
     /// Valores que obligan a reiniciar la captura de video si cambian (se pierde el buffer).
-    pub fn video_params(&self) -> (bool, u32, u32, u32) {
-        (self.enabled, self.fps, self.bitrate_mbps, self.resolution)
+    pub fn video_params(&self) -> (bool, u32, u32, u32, Codec) {
+        (self.enabled, self.fps, self.bitrate_mbps, self.resolution, self.codec)
     }
 
     /// Tamaño del video (pares) para un monitor que se grabaría a `full`, con la resolución elegida.
@@ -240,12 +295,13 @@ impl Config {
     pub fn typical_ram_mb(&self) -> u32 {
         let channels = self.game_audio as u32 + self.desktop_audio as u32 + self.mic_audio as u32;
         let audio = channels * self.seconds * (AUDIO_BYTES_PER_SEC / 1000) as u32 / 1000;
-        let video = self.bitrate_mbps * self.seconds / 80;
+        let video = self.codec.bitrate(self.bitrate_mbps) / 1_000_000 * self.seconds / 80;
         (40 + audio + video).div_ceil(10) * 10
     }
 
     /// Duración máxima del clip en esta PC con la calidad elegida (múltiplo de 5 s): aunque el video
-    /// llegue al bitrate completo (todo en movimiento), el buffer no pasa de un cuarto de la RAM.
+    /// llegue al bitrate completo (todo en movimiento), el buffer no pasa de un cuarto de la RAM. Se cuenta como
+    /// H.264 aunque se elija H.265: si la placa no lo tiene, se graba en H.264.
     pub fn max_seconds(&self) -> u32 {
         // Se cuentan los tres canales de audio: así prender el micrófono no recorta la duración.
         let per_sec = self.bitrate_mbps as u64 * 125_000 + 3 * AUDIO_BYTES_PER_SEC;

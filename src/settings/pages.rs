@@ -8,7 +8,7 @@ use crate::app::autostart;
 use crate::app::keys::hotkey_name;
 use crate::app::mode::Mode;
 use crate::app::update;
-use crate::config::{CaptureMode, GlobalAction, MAX_MBPS, MAX_SECONDS, MIN_MBPS, MIN_SECONDS, RESOLUTIONS};
+use crate::config::{CaptureMode, Codec, GlobalAction, MAX_MBPS, MAX_SECONDS, MIN_MBPS, MIN_SECONDS, RESOLUTIONS};
 use crate::i18n::{tr, trf, Lang, Language};
 
 /// Calidades de video de un toque (Mbps): baja, media y alta.
@@ -372,14 +372,25 @@ impl SettingsApp {
             row(ui, tr!("Cuadros por segundo", "Frames per second", "Quadros por segundo"), LABEL_W, |ui| {
                 seg(ui, &mut self.cfg.fps, &[(30, "30"), (60, "60"), (120, "120")]);
             });
+            row(ui, tr!("Formato", "Format", "Formato"), LABEL_W, |ui| {
+                let opts = [(Codec::H264, Codec::H264.label()), (Codec::Hevc, Codec::Hevc.label())];
+                seg(ui, &mut self.cfg.codec, &opts);
+            });
             hint(
                 ui,
                 LABEL_W + 8.0,
-                tr!(
-                    "Video MP4 (H.264): se reproduce en cualquier PC, celular, Discord o WhatsApp.",
-                    "MP4 video (H.264): plays on any PC, phone, Discord or WhatsApp.",
-                    "Vídeo MP4 (H.264): roda em qualquer PC, celular, Discord ou WhatsApp."
-                ),
+                match self.cfg.codec {
+                    Codec::H264 => tr!(
+                        "Video MP4 (H.264): se reproduce en cualquier PC, celular, Discord o WhatsApp.",
+                        "MP4 video (H.264): plays on any PC, phone, Discord or WhatsApp.",
+                        "Vídeo MP4 (H.264): roda em qualquer PC, celular, Discord ou WhatsApp."
+                    ),
+                    Codec::Hevc => tr!(
+                        "Video MP4 (H.265): la misma imagen en clips un tercio más livianos. Algunas PCs necesitan «Extensiones de video HEVC» (Microsoft Store) para verlo, y Discord o WhatsApp pueden no reproducirlo. Si tu placa no lo tiene, graba en H.264.",
+                        "MP4 video (H.265): the same image in clips a third lighter. Some PCs need “HEVC Video Extensions” (Microsoft Store) to play it, and Discord or WhatsApp may not play it. If your graphics card doesn't support it, it records in H.264.",
+                        "Vídeo MP4 (H.265): a mesma imagem em clipes um terço mais leves. Alguns PCs precisam das “Extensões de Vídeo HEVC” (Microsoft Store) para ver, e o Discord ou o WhatsApp podem não reproduzir. Se a sua placa não suportar, grava em H.264."
+                    ),
+                },
             );
             self.encoder_row(ui);
             divider(ui);

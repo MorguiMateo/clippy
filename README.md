@@ -2,7 +2,7 @@
 
 Grabador de repeticiones instantáneas para Windows, ultraliviano: graba siempre en segundo plano
 (en RAM) y con una tecla (F9) guarda los últimos segundos como MP4. Todo el video pasa por la GPU
-(DXGI Desktop Duplication → D3D11 NV12 → encoder H.264 por hardware de Media Foundation). Si la placa no
+(DXGI Desktop Duplication → D3D11 NV12 → encoder H.264 o H.265 por hardware de Media Foundation). Si la placa no
 tiene encoder de video, usa el H.264 de Windows por procesador, hasta 1080p a 30 fps.
 
 Descarga y novedades en [clpy.vercel.app](https://clpy.vercel.app). Las versiones se publican en
@@ -38,7 +38,7 @@ Solo con `--features devtools`:
 
 | Argumentos | Qué hace |
 | --- | --- |
-| `--test <seg> <carpeta> [game\|desktop\|mic\|juegos\|cursor\|720\|1080\|1440]` | Graba, guarda un clip y sale (imprime el encoder y el juego detectado; `cursor` dibuja el cursor del mouse; un número elige la resolución del clip). Con la variable `CLIPPY_CPU_ENCODER=1`, codifica con el procesador como en una placa sin encoder; con `CLIPPY_TEST_LOST=<seg>`, a esos segundos se pierde la placa una vez, como en un reinicio del driver; con `CLIPPY_TEST_STALL=<seg>`, la captura se traba pasado ese tiempo. |
+| `--test <seg> <carpeta> [game\|desktop\|mic\|juegos\|cursor\|hevc\|720\|1080\|1440]` | Graba, guarda un clip y sale (imprime el encoder y el juego detectado; `cursor` dibuja el cursor del mouse; `hevc` graba en H.265; un número elige la resolución del clip). Con la variable `CLIPPY_CPU_ENCODER=1`, codifica con el procesador como en una placa sin encoder; con `CLIPPY_TEST_LOST=<seg>`, a esos segundos se pierde la placa una vez, como en un reinicio del driver; con `CLIPPY_TEST_STALL=<seg>`, la captura se traba pasado ese tiempo. |
 | `--test-fullscreen <ancho>x<alto> <seg> [alttab]` | Un juego de mentira en pantalla completa exclusiva (cambia el modo de video, como una resolución estirada); con `alttab`, sale y vuelve cada 6 s. Corré una copia del exe con otro nombre para que cuente como juego. |
 | `--test-mic` | Cuánto audio entrega cada micrófono en 3 s. |
 | `--test-download` | Descarga la versión publicada como el botón "Actualizar". |
