@@ -97,7 +97,7 @@ El exe sale con 0 si todo está bien, con 3 si hay algo para revisar y con 1 si 
 | Sube la memoria de video | Texturas que se recrean: el pool de `Converter` (`record/convert.rs`), la copia de la captura y el cursor (`record/capture.rs`, `record/cursor.rs`). |
 | Suben los hilos o los handles | Hilos de audio (`Audio::open`, `record/audio.rs`), eventos de WASAPI, procesos abiertos en `record/game.rs`, hilos de guardado. |
 | Tirones por conversión sin terminar | La placa atiende la conversión detrás del juego: prioridad de Clippy en la placa (`Capture::open_on` en `record/capture.rs`). |
-| Tirones por encoder sin pedir o fila llena | El encoder no da abasto un rato: `IN_FLIGHT` en `record/convert.rs` (cuánto aguanta la fila) y `encoder_holds` en `session` (`record/recorder.rs`). Subir la prioridad en la placa no ayuda: el encoder es otro motor. |
+| Tirones por encoder sin pedir o fila llena | El encoder no da abasto un rato o comparte el dispositivo D3D11 con la placa ocupada por el juego: revisar `IN_FLIGHT` en `record/convert.rs`, `pool` en `session` (`record/recorder.rs`) y la prioridad en la placa (`Capture::open_on` en `record/capture.rs`). |
 | `fps_real` por debajo de lo pedido | Encoder saturado (`pending_input`), conversiones en vuelo llenas (`IN_FLIGHT` en `record/convert.rs`), placa al 100 %. |
 | Trabajo por cuadro alto o cuadros salteados | Lo que corre en cada vuelta de `session` (`record/recorder.rs`): `au.sync`, `game.poll`, `cap.aim` cada 250 ms, `save_clip`. |
 | Grabación frenada al guardar | `save_clip` en el hilo de grabación (`record/recorder.rs`). |
@@ -133,3 +133,33 @@ misma PC y nada más abierto.
 - Si hay una fuga: cuánto crece por minuto y cuánto sería en una hora de juego.
 - Dónde mejorar: lo que más consume o lo que se acerca al límite, con el archivo y la función, y qué cambiarías.
 - Lo que no se pudo medir y por qué.
+
+## 7. Medir cuánto le baja Clippy los FPS al juego
+
+`--test-soak` mide a Clippy desde adentro, pero no ve los FPS del juego. Para medir el impacto real sobre el juego (por
+ejemplo, para validar si subir la prioridad de Clippy en la placa le saca rendimiento al juego):
+
+1. Usá una herramienta externa de medición, nunca como dependencia de Clippy:
+   - **PresentMon** (Intel, CLI o GUI): mide FPS promedio, 1 % low y 0,1 % low (`msBetweenPresents` / `msBetweenDisplayChange`)
+     del proceso del juego sin inyectarse en él (seguro con anticheats como Vanguard).
+   - O el contador/benchmark integrado del juego si reporta promedio y percentiles.
+2. Misma partida, mismo mapa o recorrido repetible, mismos ajustes gráficos y nada más abierto:
+   - **Línea base**: sin Clippy abierto.
+   - **Con Clippy**: grabando en segundo plano con su `APPDATA` de prueba (y, si se compara una opción como prioridad
+     `realtime` vs `high`, una corrida por variante).
+3. Compará FPS promedio, 1 % low y 0,1 % low (el 1 % low muestra micro-tirones que el promedio tapa). Si la diferencia es
+   menor al ruido entre dos pasadas de la misma condición, repetí cada condición dos veces.
+
+## 8. Casos pendientes de medir
+
+Además de NVIDIA + H.264 jugando como administrador, falta cubrir estos escenarios en Windows:
+
+- **Valorant (Vanguard + resolución estirada 1568×1080)**: anticheat estricto (verifica que el detector de juegos y el
+  audio del juego no fallen sin abrir el proceso) y reescalado/estirado de pantalla completa exclusiva + Alt+Tab.
+- **Placas AMD (AMF) e Intel (Quick Sync)**: tiempos de conversión, latencia del encoder, tirones, VRAM y encabezados
+  H.264/H.265 en drivers reales.
+- **Encoder por procesador (`CLIPPY_CPU_ENCODER=1`)**: consumo de CPU grabando y jugando, `Readback` y cuadros perdidos
+  a 1080p 30 fps.
+- **Clippy como usuario común (sin permisos de administrador)**: comportamiento habitual del usuario final, permisos de
+  prioridad en la placa (`D3DKMTSetProcessSchedulingPriorityClass` / `SetGPUThreadPriority`) y captura sobre juegos
+  elevados.
