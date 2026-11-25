@@ -120,7 +120,13 @@ pub fn wave_from_pcm(pcm: &[i16]) -> Wave {
 }
 
 fn to_hex(v: &[u8]) -> String {
-    v.iter().map(|b| format!("{b:02x}")).collect()
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut s = String::with_capacity(v.len() * 2);
+    for &b in v {
+        s.push(HEX[(b >> 4) as usize] as char);
+        s.push(HEX[(b & 15) as usize] as char);
+    }
+    s
 }
 
 fn from_hex(s: &str) -> Option<Vec<u8>> {
