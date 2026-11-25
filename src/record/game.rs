@@ -23,8 +23,9 @@ const NOT_GAMES: &[&str] = &[
     "vlc", "mpc-hc", "mpc-hc64", "mpc-be", "mpc-be64", "mpv", "potplayer", "potplayer64", "potplayermini", "potplayermini64",
     "microsoft.media.player", "video.ui", "wmplayer",
     "explorer", "applicationframehost", "powerpnt", "lockapp", "searchhost", "startmenuexperiencehost", "shellexperiencehost",
-    // El recorte de pantalla de Windows tapa todo el monitor mientras elegís qué capturar.
-    "snippingtool", "screenclippinghost",
+    // Herramientas de captura de pantalla: tapan todo el monitor mientras elegís qué recortar.
+    "snippingtool", "screenclippinghost", "lightshot", "sharex", "greenshot", "snagitcapture", "snagit32",
+    "flameshot", "snipaste", "gyazo", "gyazowin", "picpick", "screenpresso",
     "clippy",
 ];
 
