@@ -72,7 +72,12 @@ El exe sale con 0 si todo está bien, con 3 si hay algo para revisar y con 1 si 
   - "posible fuga": sube más de lo tolerado por minuto y en total.
   - "RAM fuera de los buffers de video y audio" es la clave. Si sube la RAM privada pero esta no, es el buffer creciendo
     (por ejemplo, un video que se mueve más y pesa más), no una fuga.
-  - `al_cerrar`: hilos y handles que quedaron después de cerrar la grabadora.
+  - En "RAM fuera de los buffers" no se miran los tramos con el buffer achicado (por debajo del 75 % del más alto hasta
+    ahí, por ejemplo con el juego en pausa). Ahí el heap no devuelve todo lo que soltó el buffer y sube de un escalón
+    sin que sea una fuga. `tramos_descartados` dice cuántos fueron.
+  - `al_cerrar`: hilos y handles que quedaron después de cerrar la grabadora. Antes de medir, el soak hace una vuelta de
+    calentamiento de 5 s con un clip (en `calentamiento\`, no cuenta entre los clips de la corrida), así que lo que
+    Windows carga una sola vez (las DLL de Media Foundation y del encoder, ~95 handles) ya no aparece.
 - **Tirones** (`tirones`): los segundos con menos del 90 % de los cuadros al encoder, cuándo fueron y la causa que más
   se repitió en esos segundos. Lo cuenta el hilo de grabación en cada vuelta (`gpu_late`, `encoder_busy`, `dropped` en
   `perf.jsonl`):

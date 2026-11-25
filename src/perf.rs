@@ -377,6 +377,12 @@ pub fn soak(args: &[String]) -> i32 {
     let cfg = crate::devtools::test_config(dir.clone(), scenario);
     let warmup = cfg.seconds as f64 + 15.0;
     let mut meter = Meter::new();
+    // Una vuelta corta antes de medir: lo que Windows carga una sola vez (las DLL de Media Foundation y del encoder de
+    // la placa, ~95 handles) ya queda cargado, y `al_cerrar` muestra solo lo que deja la grabadora. Su clip va aparte.
+    let mut first = cfg.clone();
+    first.output_dir = dir.join("calentamiento");
+    let _ = std::fs::create_dir_all(&first.output_dir);
+    println!("calentamiento: grabadora 5 s y un clip ({})", if session_once(&first, 5) { "guardado" } else { "NO guardado" });
     let before = meter.sample(0.0, false);
 
     let events: Arc<Mutex<Vec<(Instant, Event)>>> = Arc::default();
@@ -468,16 +474,7 @@ pub fn restart(args: &[String]) -> i32 {
     println!("antes de grabar: {} handles, {} hilos", before.handles, before.hilos);
     let mut after = Vec::new();
     for round in 1..=rounds {
-        let (tx, rx) = std::sync::mpsc::channel();
-        let notify: Notify = Arc::new(move |e| {
-            let _ = tx.send(e);
-        });
-        let rec = Recorder::start(cfg.clone(), notify);
-        std::thread::sleep(Duration::from_secs(15));
-        rec.save();
-        let saved = (0..10).any(|_| matches!(rx.recv_timeout(Duration::from_secs(1)), Ok(Event::Saved(_))));
-        drop(rec);
-        std::thread::sleep(Duration::from_secs(2));
+        let saved = session_once(&cfg, 15);
         let s = meter.sample(0.0, false);
         println!(
             "vuelta {round}: {} handles ({:+} contra antes de grabar), {} hilos ({:+}), clip {}",
@@ -499,6 +496,22 @@ pub fn restart(args: &[String]) -> i32 {
         println!("OK: lo que queda después de cerrar es de una sola vez ({h:+.1} handles y {t:+.1} hilos por vuelta desde la segunda)");
         0
     }
+}
+
+/// Arranca la grabadora, graba `secs` segundos, guarda un clip, la cierra y espera 2 s a que se suelte todo. Devuelve
+/// si el clip se guardó.
+fn session_once(cfg: &crate::config::Config, secs: u64) -> bool {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let notify: Notify = Arc::new(move |e| {
+        let _ = tx.send(e);
+    });
+    let rec = Recorder::start(cfg.clone(), notify);
+    std::thread::sleep(Duration::from_secs(secs));
+    rec.save();
+    let saved = (0..10).any(|_| matches!(rx.recv_timeout(Duration::from_secs(1)), Ok(Event::Saved(_))));
+    drop(rec);
+    std::thread::sleep(Duration::from_secs(2));
+    saved
 }
 
 /// Lo que se ve en la consola mientras graba (para seguirla en vivo): un "ESTADO" por minuto y un "AVISO" cuando algo
@@ -584,6 +597,8 @@ struct Leak {
     fin: f64,
     pendiente_por_min: f64,
     veredicto: &'static str,
+    /// Tramos que no se miraron porque el buffer se había achicado (ver `analyze`).
+    tramos_descartados: usize,
 }
 
 #[derive(Serialize)]
@@ -656,20 +671,36 @@ fn analyze(i: &Input, samples: &[Sample]) -> Report {
     let saves = SAVES.lock().unwrap().clone();
     let mut avisos = Vec::new();
 
-    // Recurso, unidad, cómo se lee, cuánto puede subir por minuto y en total sin que sea una fuga.
+    // Tramos con el buffer achicado: el piso del buffer de video y audio quedó por debajo del 75 % del más alto hasta ese
+    // momento (la imagen se quedó quieta y pesa menos). Ahí el heap no devuelve toda la memoria que soltó el buffer y
+    // "RAM fuera de los buffers" sube de un escalón aunque no haya fuga, así que esos tramos no se miran para ese recurso.
+    let buffers = |s: &Sample| s.rec.as_ref().map_or(0.0, |r| r.video_mb + r.audio_mb);
+    let mut top = 0.0f64;
+    let shrunk: Vec<bool> = floors(&steady, buffers)
+        .iter()
+        .map(|&(_, b)| {
+            top = top.max(b);
+            b < top * 0.75
+        })
+        .collect();
+
+    // Recurso, unidad, cómo se lee, cuánto puede subir por minuto y en total sin que sea una fuga, y si se descartan los
+    // tramos con el buffer achicado.
     type Get = fn(&Sample) -> f64;
-    let checks: [(&'static str, &'static str, Get, f64, f64); 7] = [
-        ("RAM privada", "MB", |s| s.privada_mb, 0.5, 5.0),
-        ("RAM fuera de los buffers de video y audio", "MB", |s| s.privada_mb - s.rec.as_ref().map_or(0.0, |r| r.video_mb + r.audio_mb), 0.5, 5.0),
-        ("memoria de video", "MB", |s| s.vram_mb, 0.5, 5.0),
-        ("handles", "", |s| s.handles as f64, 2.0, 20.0),
-        ("hilos", "", |s| s.hilos as f64, 0.2, 3.0),
-        ("objetos GDI", "", |s| s.gdi as f64, 1.0, 10.0),
-        ("objetos USER", "", |s| s.user as f64, 1.0, 10.0),
+    let checks: [(&'static str, &'static str, Get, f64, f64, bool); 7] = [
+        ("RAM privada", "MB", |s| s.privada_mb, 0.5, 5.0, false),
+        ("RAM fuera de los buffers de video y audio", "MB", |s| s.privada_mb - s.rec.as_ref().map_or(0.0, |r| r.video_mb + r.audio_mb), 0.5, 5.0, true),
+        ("memoria de video", "MB", |s| s.vram_mb, 0.5, 5.0, false),
+        ("handles", "", |s| s.handles as f64, 2.0, 20.0, false),
+        ("hilos", "", |s| s.hilos as f64, 0.2, 3.0, false),
+        ("objetos GDI", "", |s| s.gdi as f64, 1.0, 10.0, false),
+        ("objetos USER", "", |s| s.user as f64, 1.0, 10.0, false),
     ];
     let mut fugas = Vec::new();
-    for (recurso, unidad, get, per_min, total) in checks {
-        let f = floors(&steady, get);
+    for (recurso, unidad, get, per_min, total, skip_shrunk) in checks {
+        let all = floors(&steady, get);
+        let f: Vec<(f64, f64)> = all.iter().zip(&shrunk).filter(|(_, &s)| !(skip_shrunk && s)).map(|(x, _)| *x).collect();
+        let tramos_descartados = all.len() - f.len();
         let r = |x: f64| (x * 100.0).round() / 100.0;
         let (inicio, fin) = (f.first().map_or(0.0, |x| x.1), f.last().map_or(0.0, |x| x.1));
         let m = if f.len() >= 3 { slope(&f) } else { 0.0 };
@@ -681,7 +712,7 @@ fn analyze(i: &Input, samples: &[Sample]) -> Report {
         } else {
             "estable"
         };
-        fugas.push(Leak { recurso, unidad, inicio: r(inicio), fin: r(fin), pendiente_por_min: r(m), veredicto });
+        fugas.push(Leak { recurso, unidad, inicio: r(inicio), fin: r(fin), pendiente_por_min: r(m), veredicto, tramos_descartados });
     }
 
     let fps_real = stat(recs.iter().map(|r| r.fed as f64));
@@ -741,9 +772,13 @@ fn analyze(i: &Input, samples: &[Sample]) -> Report {
     }
     let left = i.after.hilos as i64 - i.before.hilos as i64;
     let left_h = i.after.handles as i64 - i.before.handles as i64;
-    let al_cerrar = format!("al cerrar la grabadora quedaron {left:+} hilos y {left_h:+} handles respecto de antes de empezar");
-    if left > 2 || left_h > 50 {
-        avisos.push(format!("Al cerrar la grabadora no se soltó todo: {left:+} hilos y {left_h:+} handles."));
+    let al_cerrar = format!(
+        "al cerrar la grabadora quedaron {left:+} hilos y {left_h:+} handles respecto de antes de empezar (ya con lo que Windows carga una sola vez, por la vuelta de calentamiento)"
+    );
+    if left > 2 || left_h > 20 {
+        avisos.push(format!(
+            "Al cerrar la grabadora no se soltó todo: {left:+} hilos y {left_h:+} handles. Confirmalo con --test-restart: si crece en cada vuelta, cada sesión deja algo."
+        ));
     }
     if i.minutes * 60.0 < i.warmup + 120.0 {
         avisos.push(format!("La corrida es corta: para buscar fugas conviene grabar al menos {:.0} min.", (i.warmup + 300.0) / 60.0));
@@ -833,6 +868,13 @@ impl Report {
         m += "\n## Fugas (piso de cada tramo de 30 s, sin los picos de guardar)\n\n| Recurso | Al llenarse el buffer | Al final | Por minuto | Veredicto |\n|---|---|---|---|---|\n";
         for f in &self.fugas {
             m += &format!("| {} | {} {} | {} {} | {:+} | {} |\n", f.recurso, f.inicio, f.unidad, f.fin, f.unidad, f.pendiente_por_min, f.veredicto);
+        }
+        for f in self.fugas.iter().filter(|f| f.tramos_descartados > 0) {
+            m += &format!(
+                "\n{}: no se miraron {} tramos de 30 s con el buffer achicado (la imagen se quedó quieta y el heap no devuelve todo lo que soltó el buffer).\n",
+                capitalize(f.recurso),
+                f.tramos_descartados
+            );
         }
         m += &format!("\n{}.\n", capitalize(&self.al_cerrar));
         if !self.eventos.is_empty() {
