@@ -6,6 +6,8 @@
 //!   Con `CLIPPY_TEST_STALL=<segundos>`, pasado ese tiempo la captura se traba (la duplicación se pierde apenas se abre).
 //! - `--test-soak <minutos> <carpeta> [escenario] [segundos entre clips]`: graba un rato largo midiéndose a sí mismo y
 //!   escribe un informe de rendimiento y fugas (ver `perf`).
+//! - `--test-restart [vueltas] <carpeta>`: arranca y cierra la grabadora varias veces en el mismo proceso y cuenta los
+//!   hilos y handles que quedan después de cada vuelta (ver `perf::restart`).
 //! - `--test-mic`: cuánto audio entrega cada micrófono en 3 s.
 //! - `--test-download`: descarga la versión publicada como el botón "Actualizar".
 //! - `--test-export`, `--test-frame`, `--test-strip`, `--test-covers`: ver `editor::devtools`.
@@ -29,6 +31,9 @@ pub fn run(args: &[String]) -> Option<i32> {
     }
     if let Some(i) = at("--test-soak") {
         return Some(crate::perf::soak(&args[i + 1..]));
+    }
+    if let Some(i) = at("--test-restart") {
+        return Some(crate::perf::restart(&args[i + 1..]));
     }
     if at("--test-mic").is_some() {
         return Some(test_mic());

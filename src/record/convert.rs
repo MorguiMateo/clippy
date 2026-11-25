@@ -255,6 +255,18 @@ impl Converter {
         Ok(done.as_bool().then(|| Ready { tex: s.tex.clone(), pts, converted: true }))
     }
 
+    /// Cuadros en la fila (mandados a convertir y todavía sin pasar al encoder).
+    #[cfg(feature = "devtools")]
+    pub fn queued(&self) -> usize {
+        self.queue.len()
+    }
+
+    /// La fila está llena: el próximo `convert` o `black` saltea su cuadro.
+    #[cfg(feature = "devtools")]
+    pub fn full(&self) -> bool {
+        self.queue.len() >= IN_FLIGHT
+    }
+
     /// Saca de la fila el cuadro que entregó `ready`.
     pub fn pop(&mut self) {
         self.queue.pop_front();

@@ -42,6 +42,13 @@ pub struct Rec {
     pub fed: u32,
     /// Cuadros salteados porque el hilo se despertó tarde.
     pub missed: u32,
+    /// Por qué no llegaron cuadros al encoder (vueltas en este segundo):
+    /// - `gpu_late`: el más viejo de la fila seguía sin convertir (la placa no llegó a hacer la conversión);
+    /// - `encoder_busy`: había cuadros listos pero el encoder no pidió más;
+    /// - `dropped`: la fila de conversiones estaba llena y el cuadro nuevo se descartó (ese se pierde).
+    pub gpu_late: u32,
+    pub encoder_busy: u32,
+    pub dropped: u32,
     /// Cuánto trabajó el hilo por vuelta (ms): promedio y máximo.
     pub busy_avg_ms: f64,
     pub busy_max_ms: f64,
@@ -73,6 +80,9 @@ pub struct Loop {
     since: i64,
     fed: u32,
     missed: u32,
+    gpu_late: u32,
+    encoder_busy: u32,
+    dropped: u32,
     turns: u32,
     busy_sum: i64,
     busy_max: i64,
@@ -85,6 +95,18 @@ impl Loop {
 
     pub fn missed(&mut self, frames: i64) {
         self.missed += frames.max(0) as u32;
+    }
+
+    pub fn gpu_late(&mut self) {
+        self.gpu_late += 1;
+    }
+
+    pub fn encoder_busy(&mut self) {
+        self.encoder_busy += 1;
+    }
+
+    pub fn dropped(&mut self) {
+        self.dropped += 1;
     }
 
     /// Fin de una vuelta que trabajó `busy`. Una vez por segundo publica lo contado y el tamaño de los buffers
@@ -102,6 +124,9 @@ impl Loop {
             fps,
             fed: self.fed,
             missed: self.missed,
+            gpu_late: self.gpu_late,
+            encoder_busy: self.encoder_busy,
+            dropped: self.dropped,
             busy_avg_ms: ms(self.busy_sum / self.turns.max(1) as i64),
             busy_max_ms: ms(self.busy_max),
             video_mb,
@@ -420,6 +445,62 @@ pub fn soak(args: &[String]) -> i32 {
     }
 }
 
+/// `--test-restart [vueltas] <carpeta>`: arranca la grabadora, graba 15 s, guarda un clip y la cierra, varias veces en
+/// el mismo proceso (3 si no se dice). Después de cada vuelta cuenta hilos y handles: si lo que queda después de cerrar
+/// es igual en cada vuelta, son cosas que Windows carga una sola vez (las DLL de Media Foundation o del encoder de la
+/// placa); si crece en cada vuelta, cada sesión deja algo sin soltar. Sale con 0 si no crece y 3 si crece.
+pub fn restart(args: &[String]) -> i32 {
+    let (rounds, dir) = match args.first().and_then(|s| s.parse::<u32>().ok()) {
+        Some(n) => (n.max(2), args.get(1)),
+        None => (3, args.first()),
+    };
+    let Some(dir) = dir.map(std::path::PathBuf::from) else {
+        println!("uso: --test-restart [vueltas] <carpeta>");
+        return 1;
+    };
+    if std::fs::create_dir_all(&dir).is_err() {
+        println!("ERROR no se pudo crear {}", dir.display());
+        return 1;
+    }
+    let cfg = crate::devtools::test_config(dir, None);
+    let mut meter = Meter::new();
+    let before = meter.sample(0.0, false);
+    println!("antes de grabar: {} handles, {} hilos", before.handles, before.hilos);
+    let mut after = Vec::new();
+    for round in 1..=rounds {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let notify: Notify = Arc::new(move |e| {
+            let _ = tx.send(e);
+        });
+        let rec = Recorder::start(cfg.clone(), notify);
+        std::thread::sleep(Duration::from_secs(15));
+        rec.save();
+        let saved = (0..10).any(|_| matches!(rx.recv_timeout(Duration::from_secs(1)), Ok(Event::Saved(_))));
+        drop(rec);
+        std::thread::sleep(Duration::from_secs(2));
+        let s = meter.sample(0.0, false);
+        println!(
+            "vuelta {round}: {} handles ({:+} contra antes de grabar), {} hilos ({:+}), clip {}",
+            s.handles,
+            s.handles as i64 - before.handles as i64,
+            s.hilos,
+            s.hilos as i64 - before.hilos as i64,
+            if saved { "guardado" } else { "NO guardado" }
+        );
+        after.push(s);
+    }
+    // Desde la segunda vuelta: lo de la primera puede ser lo que se carga una sola vez.
+    let per_round = |f: fn(&Sample) -> u32| (f(&after[after.len() - 1]) as f64 - f(&after[0]) as f64) / (after.len() - 1) as f64;
+    let (h, t) = (per_round(|s| s.handles), per_round(|s| s.hilos));
+    if h > 5.0 || t > 0.5 {
+        println!("REVISAR: cada sesión deja {h:.1} handles y {t:.1} hilos sin soltar");
+        3
+    } else {
+        println!("OK: lo que queda después de cerrar es de una sola vez ({h:+.1} handles y {t:+.1} hilos por vuelta desde la segunda)");
+        0
+    }
+}
+
 /// Lo que se ve en la consola mientras graba (para seguirla en vivo): un "ESTADO" por minuto y un "AVISO" cuando algo
 /// se sale de lo normal.
 fn live(s: &Sample, prev: Option<&Sample>) {
@@ -433,7 +514,10 @@ fn live(s: &Sample, prev: Option<&Sample>) {
     let Some(r) = s.rec.as_ref().filter(|_| s.t >= 3.0) else { return };
     let budget = 1000.0 / r.fps.max(1) as f64;
     if (r.fed as f64) < r.fps as f64 * 0.9 {
-        println!("AVISO {t} s: el encoder recibió {} cuadros de {}", r.fed, r.fps);
+        println!(
+            "AVISO {t} s: el encoder recibió {} cuadros de {} (conversión sin terminar {}, encoder sin pedir {}, descartados con la fila llena {})",
+            r.fed, r.fps, r.gpu_late, r.encoder_busy, r.dropped
+        );
     }
     if r.missed > 0 {
         println!("AVISO {t} s: se saltearon {} cuadros por despertarse tarde", r.missed);
@@ -477,6 +561,19 @@ fn stat(v: impl Iterator<Item = f64>) -> Stat {
     Stat { prom: r(v.iter().sum::<f64>() / v.len() as f64), p95: r(v[(v.len() - 1) * 95 / 100]), max: r(v[v.len() - 1]) }
 }
 
+/// Los segundos con tirones y sus causas (sumadas en esos segundos; ver `Rec`).
+#[derive(Serialize)]
+struct Tirones {
+    segundos: u32,
+    conversion_sin_terminar: u32,
+    encoder_sin_pedir: u32,
+    descartados_fila_llena: u32,
+    /// Lo que más se repitió.
+    causa: &'static str,
+    /// Cuándo (segundos desde el arranque).
+    cuando: Vec<u32>,
+}
+
 /// Un recurso que se revisa por fugas.
 #[derive(Serialize)]
 struct Leak {
@@ -506,6 +603,8 @@ struct Report {
     vram_mb: Stat,
     fps_real: Stat,
     cuadros_perdidos: u32,
+    /// Segundos con menos del 90 % de los cuadros al encoder, y qué pasó en esos segundos.
+    tirones: Tirones,
     trabajo_por_cuadro_ms: Stat,
     presupuesto_por_cuadro_ms: f64,
     guardado_frenada_ms: Stat,
@@ -586,6 +685,36 @@ fn analyze(i: &Input, samples: &[Sample]) -> Report {
     }
 
     let fps_real = stat(recs.iter().map(|r| r.fed as f64));
+    let dips: Vec<(f64, &Rec)> = samples
+        .iter()
+        .filter(|s| s.t >= 3.0)
+        .filter_map(|s| s.rec.as_ref().map(|r| (s.t, r)))
+        .filter(|(_, r)| (r.fed as f64) < r.fps as f64 * 0.9)
+        .collect();
+    let sum = |f: fn(&Rec) -> u32| dips.iter().map(|(_, r)| f(r)).sum::<u32>();
+    let (late, busy_enc, dropped) = (sum(|r| r.gpu_late), sum(|r| r.encoder_busy), sum(|r| r.dropped));
+    let causa = if dips.is_empty() {
+        "sin tirones"
+    } else if dropped >= late.max(busy_enc) && dropped > 0 {
+        "la fila de conversiones se llena: la placa convierte tarde y se descartan cuadros"
+    } else if late >= busy_enc && late > 0 {
+        "la conversión no termina a tiempo (la placa la atiende detrás del juego)"
+    } else if busy_enc > 0 {
+        "el encoder no pide cuadros (encoder saturado)"
+    } else {
+        "ninguna de las tres: no llegaron imágenes nuevas a convertir"
+    };
+    if !dips.is_empty() {
+        avisos.push(format!("{} segundos con tirones (menos del 90 % de los cuadros al encoder). Causa: {causa}.", dips.len()));
+    }
+    let tirones = Tirones {
+        segundos: dips.len() as u32,
+        conversion_sin_terminar: late,
+        encoder_sin_pedir: busy_enc,
+        descartados_fila_llena: dropped,
+        causa,
+        cuando: dips.iter().map(|(t, _)| t.round() as u32).collect(),
+    };
     let missed: u32 = recs.iter().map(|r| r.missed).sum();
     let busy = stat(recs.iter().map(|r| r.busy_max_ms));
     if fps > 0 && fps_real.prom < fps as f64 * 0.97 {
@@ -644,6 +773,7 @@ fn analyze(i: &Input, samples: &[Sample]) -> Report {
         vram_mb: stat(steady.iter().map(|s| s.vram_mb)),
         fps_real,
         cuadros_perdidos: missed,
+        tirones,
         trabajo_por_cuadro_ms: busy,
         presupuesto_por_cuadro_ms: (budget * 100.0).round() / 100.0,
         guardado_frenada_ms: held,
@@ -683,6 +813,11 @@ impl Report {
         m += "\n## Video\n\n";
         m += &format!("- Cuadros por segundo al encoder: {} (pedidos: {})\n", st(&self.fps_real), self.fps_objetivo);
         m += &format!("- Cuadros salteados por despertarse tarde: {}\n", self.cuadros_perdidos);
+        let tr = &self.tirones;
+        m += &format!(
+            "- Segundos con tirones: {} ({}). Conversión sin terminar {}, encoder sin pedir {}, descartados con la fila llena {}\n",
+            tr.segundos, tr.causa, tr.conversion_sin_terminar, tr.encoder_sin_pedir, tr.descartados_fila_llena
+        );
         m += &format!(
             "- Trabajo del hilo por vuelta (máximo de cada segundo): {} ms, de {} ms por cuadro\n",
             st(&self.trabajo_por_cuadro_ms),

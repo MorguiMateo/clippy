@@ -73,6 +73,14 @@ El exe sale con 0 si todo está bien, con 3 si hay algo para revisar y con 1 si 
   - "RAM fuera de los buffers de video y audio" es la clave. Si sube la RAM privada pero esta no, es el buffer creciendo
     (por ejemplo, un video que se mueve más y pesa más), no una fuga.
   - `al_cerrar`: hilos y handles que quedaron después de cerrar la grabadora.
+- **Tirones** (`tirones`): los segundos con menos del 90 % de los cuadros al encoder, cuándo fueron y la causa que más
+  se repitió en esos segundos. Lo cuenta el hilo de grabación en cada vuelta (`gpu_late`, `encoder_busy`, `dropped` en
+  `perf.jsonl`):
+  - `conversion_sin_terminar`: el cuadro más viejo de la fila seguía sin convertir. La placa atiende la conversión
+    detrás del juego.
+  - `encoder_sin_pedir`: había cuadros listos y el encoder no pidió más (encoder saturado).
+  - `descartados_fila_llena`: la fila de conversiones (`IN_FLIGHT`) estaba llena y el cuadro nuevo se perdió.
+  - Si no hay ninguna de las tres, no llegaron imágenes nuevas (la captura no entregó).
 - `cpu_muestreo_pct` es lo que costó medir (sobre todo los contadores de la placa). Ya está descontado de `cpu_pct`.
 - Las dudas se responden en `perf.jsonl`: picos alrededor de cada `guardando: true`, saltos, cuándo empezó a crecer algo.
 
@@ -83,10 +91,19 @@ El exe sale con 0 si todo está bien, con 3 si hay algo para revisar y con 1 si 
 | Sube la RAM fuera de los buffers | Paquetes que no se sueltan (`trim_video` en `record/recorder.rs`), muestras de Media Foundation sin liberar (`record/encoder.rs`), hilos de guardado (`record/mux.rs`), bloques de audio (`record/audio.rs`). |
 | Sube la memoria de video | Texturas que se recrean: el pool de `Converter` (`record/convert.rs`), la copia de la captura y el cursor (`record/capture.rs`, `record/cursor.rs`). |
 | Suben los hilos o los handles | Hilos de audio (`Audio::open`, `record/audio.rs`), eventos de WASAPI, procesos abiertos en `record/game.rs`, hilos de guardado. |
+| Tirones por conversión sin terminar o fila llena | La prioridad de Clippy en la placa (`Capture::open_on` en `record/capture.rs`) y `IN_FLIGHT` en `record/convert.rs`. |
 | `fps_real` por debajo de lo pedido | Encoder saturado (`pending_input`), conversiones en vuelo llenas (`IN_FLIGHT` en `record/convert.rs`), placa al 100 %. |
 | Trabajo por cuadro alto o cuadros salteados | Lo que corre en cada vuelta de `session` (`record/recorder.rs`): `au.sync`, `game.poll`, `cap.aim` cada 250 ms, `save_clip`. |
 | Grabación frenada al guardar | `save_clip` en el hilo de grabación (`record/recorder.rs`). |
 | Mucho procesador con encoder por procesador | `Readback` y el encoder de Windows (`record/encoder.rs`). |
+
+### Handles o hilos que quedan al cerrar
+
+Si `al_cerrar` muestra handles o hilos de más, corré `--test-restart [vueltas] <carpeta>` (con su propio `APPDATA`).
+Arranca la grabadora, graba 15 s, guarda un clip y la cierra, 3 veces si no se dice cuántas, en el mismo proceso.
+Después de cada vuelta cuenta lo que quedó:
+- **Igual en cada vuelta**: es de una sola vez (las DLL de Media Foundation o del encoder de la placa) y no es una fuga.
+- **Crece en cada vuelta**: cada sesión deja algo sin soltar. Sale con 3.
 
 ## 5. Comparar contra otra versión
 

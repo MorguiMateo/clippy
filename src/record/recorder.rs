@@ -429,7 +429,13 @@ fn session(
                 // Al encoder, en orden, los cuadros que la GPU ya terminó de convertir (sin esperarla: con el juego al
                 // 100 % la conversión queda en la cola detrás de sus cuadros). Si el encoder está ocupado, esperan.
                 while enc.pending_input > 0 {
-                    let Some(r) = cap.check(c.ready())? else { break };
+                    let Some(r) = cap.check(c.ready())? else {
+                        #[cfg(feature = "devtools")]
+                        if c.queued() > 0 {
+                            perf.gpu_late();
+                        }
+                        break;
+                    };
                     if r.converted && probe_at.is_some_and(|t| now >= t) {
                         probe_at = None;
                         log(&c.probe(&r.tex));
@@ -442,6 +448,15 @@ fn session(
                     #[cfg(feature = "devtools")]
                     perf.fed();
                     c.pop();
+                }
+                #[cfg(feature = "devtools")]
+                {
+                    if enc.pending_input == 0 && c.queued() > 0 {
+                        perf.encoder_busy();
+                    }
+                    if c.full() {
+                        perf.dropped();
+                    }
                 }
                 if visible {
                     // Con un juego, nunca: muchos dibujan su propio cursor y el de Windows queda quieto en el medio.
