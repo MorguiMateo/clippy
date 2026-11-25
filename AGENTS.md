@@ -107,6 +107,8 @@ corre aislada y sin ventanas:
   `config.json` (los de fábrica) son solo de esa corrida.
 - **Editor**: `--test-export`, `--test-frame`, `--test-strip`, `--test-covers` (ver `editor/devtools.rs`).
 - **Rendimiento y fugas**: `--test-soak` (ver la skill `rendimiento`). Mide procesador y placa: va de a uno por vez.
+- **Contra Bals**: `tools/versus.ps1` (ver la skill `versus`). Abre los dos programas y tapa la pantalla: de a uno por vez y
+  solo si el usuario lo pide.
 - **De a uno por vez**, porque tocan cosas de toda la PC: `--settings` y `--editor` (candado de instancia
   única y título de ventana: chocan con otro agente o con el Clippy del usuario), `CLIPPY_TEST_MODE` (cambia
   la resolución del monitor) y medir FPS o CPU. Abrí ventanas solo si el cambio toca la interfaz, al final.

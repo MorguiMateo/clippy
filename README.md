@@ -162,6 +162,55 @@ segundo) y `resumen.csv` (una fila por corrida). Para comparar versiones, corré
 - `-Antes 30`: segundos de grabación normal antes de cada uno.
 - `-Despues 5`: segundos que sigue midiendo después de cada uno.
 
+## Clippy contra Bals
+
+`tools\versus.ps1` compara Clippy con [Bals](https://github.com/sconelli24/bals), otra grabadora de repeticiones, en tu
+PC y en las mismas condiciones. Graba con cada uno por turnos, guarda un clip cada 30 s con su propia tecla y mide desde
+afuera:
+- procesador, RAM y memoria de video;
+- cada motor de la placa;
+- handles e hilos;
+- cuánto tarda en salir el clip y cómo sale (bitrate, cuadros por segundo, duración).
+
+Bals no está en este repo, porque no tiene licencia. El script baja el `bals.exe` de su última versión la primera vez.
+
+### Con Claude Code
+
+Abrí Claude Code en esta carpeta y pedile:
+
+> Hacé un versus de Clippy contra Bals con 2 vueltas y decime dónde pierde Clippy y qué cambiarías para mejorarlo.
+
+Usa la skill `versus` (`.claude/skills/versus/`), que es el ciclo completo:
+1. Compila y corre el versus.
+2. Lee el resultado.
+3. Para cada cosa en la que Clippy pierde, busca la parte del código que la hace y mira cómo la resuelve Bals.
+4. Propone el cambio. Si le decís que lo haga, lo hace en una rama y vuelve a medir para confirmar que mejoró.
+
+### A mano
+
+Con Clippy y Bals cerrados (el script abre los suyos, con carpetas de datos propias: no toca tus ajustes ni tus clips):
+
+```powershell
+cargo build --release
+powershell -ExecutionPolicy Bypass -File tools\versus.ps1 -Vueltas 2
+```
+
+Mientras mide, una ventana a pantalla completa cambia en cada cuadro, como un juego. No la cierres ni uses la PC.
+Tarda unos 15 minutos con 2 vueltas de 3 minutos. Deja en el Escritorio, en `clippy-versus\<fecha>\`:
+- `versus.md`: la tabla, con la diferencia en % y quién gana cada fila.
+- `versus.json`: los mismos datos.
+- Una carpeta por corrida, con una muestra por segundo (`muestras.csv`) y el registro de cada programa.
+
+Opciones:
+- `-Ajustes fabrica`: cada uno como viene. A Bals se le pone grabar el monitor, porque de fábrica solo graba juegos.
+  Sin la opción (`igualados`), los dos graban a 1080p, 60 fps, ~10 Mbps, sin micrófono ni cursor.
+- `-Escena quieto`: el escritorio sin movimiento, en vez de la ventana que cambia.
+- `-Minutos 5`: minutos que graba cada uno por vuelta.
+- `-Vueltas 3`: cuántas vueltas. Alterna quién va primero y promedia.
+- `-Clippy <exe>` / `-Bals <exe>`: otra versión de cada uno, por ejemplo tu rama contra `main`.
+
+Para los cuadros por segundo del clip hace falta `ffprobe` (`winget install ffmpeg`). Sin él, el resto se mide igual.
+
 ## Mapa del código
 
 ```

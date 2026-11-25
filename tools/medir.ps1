@@ -35,72 +35,18 @@ if (-not $tray) { throw "Clippy no está abierto: abrilo y dejalo grabando antes
 $clippyPid = [int]$tray.ProcessId
 $proc = Get-Process -Id $clippyPid
 $cores = [Environment]::ProcessorCount
+. (Join-Path $PSScriptRoot "medicion.ps1")
 
 # --- La tecla de guardar clip ------------------------------------------------------------------------------------------
 $cfg = Get-Content -Raw -Encoding UTF8 (Join-Path $Datos "config.json") | ConvertFrom-Json
-$vk = [byte]$cfg.hotkey_vk
+$vk = [int]$cfg.hotkey_vk
 $mods = [int]$cfg.hotkey_mods
-Add-Type -Namespace Medir -Name Teclas -MemberDefinition '[DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extra);'
-# MOD_ALT, MOD_CONTROL, MOD_SHIFT, MOD_WIN -> sus teclas.
-$modKeys = @(@(1, 0x12), @(2, 0x11), @(4, 0x10), @(8, 0x5B)) | Where-Object { $mods -band $_[0] } | ForEach-Object { [byte]$_[1] }
-function Press-SaveKey {
-    foreach ($k in $modKeys) { [Medir.Teclas]::keybd_event($k, 0, 0, [UIntPtr]::Zero) }
-    [Medir.Teclas]::keybd_event($vk, 0, 0, [UIntPtr]::Zero)
-    [Medir.Teclas]::keybd_event($vk, 0, 2, [UIntPtr]::Zero)
-    foreach ($k in $modKeys) { [Medir.Teclas]::keybd_event($k, 0, 2, [UIntPtr]::Zero) }
-}
+function Press-SaveKey { Send-Tecla $vk $mods }
 
-# --- Una muestra: CPU y RAM del proceso, uso de cada motor de la placa y memoria de video ------------------------------
-# La placa sale de los contadores de Windows en crudo (sus nombres en WMI no cambian con el idioma de Windows); el uso es
-# la diferencia entre dos muestras, como lo calcula el Administrador de tareas.
-$prevCpu = $proc.TotalProcessorTime
-$prevAt = [Diagnostics.Stopwatch]::StartNew()
-$prevEngines = @{}
+# --- Una muestra por segundo (ver medicion.ps1) -----------------------------------------------------------------------
 $selfProc = Get-Process -Id $PID
 $selfCpu0 = $selfProc.TotalProcessorTime
-
-function Take-Sample {
-    $proc.Refresh()
-    $elapsed = $script:prevAt.Elapsed.TotalSeconds
-    $script:prevAt.Restart()
-    $cpu = $proc.TotalProcessorTime
-    $cpuPct = ($cpu - $script:prevCpu).TotalSeconds / [Math]::Max($elapsed, 0.001) / $cores * 100
-    $script:prevCpu = $cpu
-
-    # En WQL "_" es un comodín: entre corchetes, para que el PID 1234 no traiga también el 12345.
-    $filter = "Name LIKE 'pid[_]$($clippyPid)[_]%'"
-    $engines = @{}
-    $use = @{ "3D" = 0.0; "Copy" = 0.0; "VideoEncode" = 0.0; "VideoProcessing" = 0.0; "Otros" = 0.0 }
-    foreach ($e in Get-CimInstance Win32_PerfRawData_GPUPerformanceCounters_GPUEngine -Filter $filter -ErrorAction SilentlyContinue) {
-        $engines[$e.Name] = @([double]$e.UtilizationPercentage, [double]$e.Timestamp_Sys100NS)
-        $prev = $script:prevEngines[$e.Name]
-        if (-not $prev) { continue }
-        $dt = [double]$e.Timestamp_Sys100NS - $prev[1]
-        if ($dt -le 0) { continue }
-        $pct = ([double]$e.UtilizationPercentage - $prev[0]) / $dt * 100
-        $type = if ($e.Name -match "engtype_(.+)$") { $Matches[1] } else { "Otros" }
-        if (-not $use.ContainsKey($type)) { $type = "Otros" }
-        $use[$type] += $pct
-    }
-    $script:prevEngines = $engines
-    $vram = 0.0
-    foreach ($m in Get-CimInstance Win32_PerfRawData_GPUPerformanceCounters_GPUProcessMemory -Filter $filter -ErrorAction SilentlyContinue) {
-        $vram += [double]$m.DedicatedUsage
-    }
-    $gpuMax = ($use.Values | Measure-Object -Maximum).Maximum
-    [pscustomobject]@{
-        cpu_pct        = [Math]::Round($cpuPct, 2)
-        ram_privada_mb = [Math]::Round($proc.PrivateMemorySize64 / 1MB, 1)
-        ram_ws_mb      = [Math]::Round($proc.WorkingSet64 / 1MB, 1)
-        vram_mb        = [Math]::Round($vram / 1MB, 1)
-        gpu_pct        = [Math]::Round([Math]::Min($gpuMax, 100), 2)
-        gpu_3d         = [Math]::Round($use["3D"], 2)
-        gpu_copia      = [Math]::Round($use["Copy"], 2)
-        gpu_encoder    = [Math]::Round($use["VideoEncode"], 2)
-        gpu_conversion = [Math]::Round($use["VideoProcessing"], 2)
-        gpu_otros      = [Math]::Round($use["Otros"], 2)
-    }
-}
+$medidor = $null
 
 # --- clippy.log: lo que escribió Clippy desde cierto punto ------------------------------------------------------------
 $logPath = Join-Path $Datos "clippy.log"
@@ -125,7 +71,7 @@ $clock = [Diagnostics.Stopwatch]::StartNew()
 $saves = New-Object Collections.Generic.List[object]
 
 function Add-Row([string]$phase, [int]$clip) {
-    $s = Take-Sample
+    $s = Read-Medidor $medidor
     $row = [pscustomobject]@{ segundo = [Math]::Round($clock.Elapsed.TotalSeconds, 1); fase = $phase; clip = $clip }
     foreach ($p in $s.PSObject.Properties) { $row | Add-Member -NotePropertyName $p.Name -NotePropertyValue $p.Value }
     $rows.Add($row)
@@ -133,7 +79,7 @@ function Add-Row([string]$phase, [int]$clip) {
 }
 
 Write-Host "Midiendo Clippy (PID $clippyPid), $Clips clips, en $csvPath"
-[void](Take-Sample) # la primera muestra solo arma la base para calcular el uso
+$medidor = New-Medidor $clippyPid
 Start-Sleep -Seconds 1
 
 for ($clip = 1; $clip -le $Clips; $clip++) {
@@ -166,12 +112,6 @@ for ($clip = 1; $clip -le $Clips; $clip++) {
 $rows | Export-Csv -NoTypeInformation -Encoding UTF8 -Path $csvPath
 
 # --- Resumen: promedio grabando contra el pico al guardar --------------------------------------------------------------
-function Stat($items, [string]$field, [string]$how) {
-    $vals = @($items | ForEach-Object { $_.$field } | Where-Object { $_ -ne $null })
-    if ($vals.Count -eq 0) { return $null }
-    $m = $vals | Measure-Object -Average -Maximum
-    if ($how -eq "max") { [Math]::Round($m.Maximum, 2) } else { [Math]::Round($m.Average, 2) }
-}
 $rec = $rows | Where-Object { $_.fase -eq "grabando" }
 $save = $rows | Where-Object { $_.fase -ne "grabando" }
 $selfProc.Refresh()
@@ -180,18 +120,18 @@ $summary = [pscustomobject]@{
     nombre                  = $Nombre
     fecha                   = $stamp
     clips                   = $Clips
-    cpu_grabando_pct        = Stat $rec cpu_pct avg
-    cpu_pico_guardando_pct  = Stat $save cpu_pct max
-    ram_grabando_mb         = Stat $rec ram_privada_mb avg
-    ram_pico_guardando_mb   = Stat $save ram_privada_mb max
-    vram_grabando_mb        = Stat $rec vram_mb avg
-    vram_pico_guardando_mb  = Stat $save vram_mb max
-    gpu_grabando_pct        = Stat $rec gpu_pct avg
-    gpu_pico_guardando_pct  = Stat $save gpu_pct max
-    guardado_promedio_ms    = Stat $saves total_ms avg
-    grabacion_frenada_ms    = Stat $saves frenada_ms avg
-    mezcla_ms               = Stat $saves mezcla_ms avg
-    mp4_ms                  = Stat $saves mp4_ms avg
+    cpu_grabando_pct        = Get-Stat $rec cpu_pct
+    cpu_pico_guardando_pct  = Get-Stat $save cpu_pct max
+    ram_grabando_mb         = Get-Stat $rec ram_privada_mb
+    ram_pico_guardando_mb   = Get-Stat $save ram_privada_mb max
+    vram_grabando_mb        = Get-Stat $rec vram_mb
+    vram_pico_guardando_mb  = Get-Stat $save vram_mb max
+    gpu_grabando_pct        = Get-Stat $rec gpu_pct
+    gpu_pico_guardando_pct  = Get-Stat $save gpu_pct max
+    guardado_promedio_ms    = Get-Stat $saves total_ms
+    grabacion_frenada_ms    = Get-Stat $saves frenada_ms
+    mezcla_ms               = Get-Stat $saves mezcla_ms
+    mp4_ms                  = Get-Stat $saves mp4_ms
     costo_medicion_cpu_pct  = [Math]::Round($selfCpu, 2)
 }
 $summaryPath = Join-Path $Salida "resumen.csv"
