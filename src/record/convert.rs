@@ -12,11 +12,9 @@ use windows::Win32::Graphics::Dxgi::Common::*;
 
 use super::capture::Frame;
 
-/// Conversiones mandadas a la GPU que todavía no se le pasaron al encoder. Si se llena (la placa va atrasada con un
-/// juego al 100 %, o el encoder tarda en pedir el próximo cuadro), ese cuadro no se convierte y se pierde. Con 3, NVENC
-/// perdía cuadros en tandas de 1 a 7 s jugando (la fila se llenaba mientras el encoder no pedía): con 5 aguanta hasta
-/// que se pone al día. Cada lugar es un cuadro NV12 en la placa (~2,9 MB a 1866x1050).
-const IN_FLIGHT: usize = 5;
+/// Conversiones mandadas a la GPU que todavía no se le pasaron al encoder. Si se llena (la placa va atrasada con
+/// un juego al 100 %), ese cuadro no se convierte. El resto del pool queda para las que el encoder sigue leyendo.
+const IN_FLIGHT: usize = 3;
 
 /// Una imagen convertida del pool, con lo que avisa cuándo la GPU terminó de escribirla.
 struct Slot {
@@ -61,10 +59,8 @@ impl Converter {
         w: u32,
         h: u32,
         fps: u32,
-        encoder_holds: usize,
+        pool_size: usize,
     ) -> Result<Self> {
-        // Las que esperan en la fila más las que el encoder sigue leyendo después de recibirlas.
-        let pool_size = IN_FLIGHT + encoder_holds;
         unsafe {
             let vdev: ID3D11VideoDevice = device.cast()?;
             let vctx: ID3D11VideoContext = context.cast()?;
