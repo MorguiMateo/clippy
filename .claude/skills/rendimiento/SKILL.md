@@ -91,7 +91,8 @@ El exe sale con 0 si todo está bien, con 3 si hay algo para revisar y con 1 si 
 | Sube la RAM fuera de los buffers | Paquetes que no se sueltan (`trim_video` en `record/recorder.rs`), muestras de Media Foundation sin liberar (`record/encoder.rs`), hilos de guardado (`record/mux.rs`), bloques de audio (`record/audio.rs`). |
 | Sube la memoria de video | Texturas que se recrean: el pool de `Converter` (`record/convert.rs`), la copia de la captura y el cursor (`record/capture.rs`, `record/cursor.rs`). |
 | Suben los hilos o los handles | Hilos de audio (`Audio::open`, `record/audio.rs`), eventos de WASAPI, procesos abiertos en `record/game.rs`, hilos de guardado. |
-| Tirones por conversión sin terminar o fila llena | La prioridad de Clippy en la placa (`Capture::open_on` en `record/capture.rs`) y `IN_FLIGHT` en `record/convert.rs`. |
+| Tirones por conversión sin terminar | La placa atiende la conversión detrás del juego: prioridad de Clippy en la placa (`Capture::open_on` en `record/capture.rs`). |
+| Tirones por encoder sin pedir o fila llena | El encoder no da abasto un rato: `IN_FLIGHT` en `record/convert.rs` (cuánto aguanta la fila) y `encoder_holds` en `session` (`record/recorder.rs`). Subir la prioridad en la placa no ayuda: el encoder es otro motor. |
 | `fps_real` por debajo de lo pedido | Encoder saturado (`pending_input`), conversiones en vuelo llenas (`IN_FLIGHT` en `record/convert.rs`), placa al 100 %. |
 | Trabajo por cuadro alto o cuadros salteados | Lo que corre en cada vuelta de `session` (`record/recorder.rs`): `au.sync`, `game.poll`, `cap.aim` cada 250 ms, `save_clip`. |
 | Grabación frenada al guardar | `save_clip` en el hilo de grabación (`record/recorder.rs`). |
