@@ -217,6 +217,7 @@ struct AudioState {
     desktop: Channel,
     mic: Channel,
     game: game::Detector,
+    output: audio::DefaultOutput,
     next_check: i64,
     /// Ventanas (100 ns) donde sonó el aviso de "clip guardado": se silencian en el canal escritorio.
     masks: Vec<(i64, i64)>,
@@ -228,7 +229,7 @@ impl AudioState {
             self.next_check = now + 30_000_000;
             // Si cambió el dispositivo de salida por defecto, reabrir la captura del sistema.
             if let Some(a) = &self.desktop.audio {
-                if a.source == Source::System && a.device_id != audio::current_default_id() {
+                if a.source == Source::System && a.device_id != self.output.id() {
                     self.desktop.audio = None;
                 }
             }
@@ -309,6 +310,7 @@ fn session(
         desktop: Channel::default(),
         mic: Channel::default(),
         game,
+        output: audio::DefaultOutput::new(),
         next_check: 0,
         masks: Vec::new(),
     };

@@ -373,9 +373,20 @@ pub fn capture_devices() -> Vec<(String, String)> {
     v
 }
 
-/// Id del dispositivo de salida por defecto (para detectar si el usuario cambió de auriculares).
-pub fn current_default_id() -> String {
-    unsafe { default_device().map(|d| device_id(&d)).unwrap_or_default() }
+/// El dispositivo de salida por defecto, para ver cada tanto si el usuario cambió de auriculares (sin crear el
+/// enumerador de Windows en cada consulta).
+pub struct DefaultOutput(Option<IMMDeviceEnumerator>);
+
+impl DefaultOutput {
+    pub fn new() -> Self {
+        Self(unsafe { CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL).ok() })
+    }
+
+    /// Id del dispositivo de ahora (vacío si no se sabe).
+    pub fn id(&self) -> String {
+        let Some(en) = &self.0 else { return String::new() };
+        unsafe { en.GetDefaultAudioEndpoint(eRender, eConsole).map(|d| device_id(&d)).unwrap_or_default() }
+    }
 }
 
 /// Buffer circular de PCM estéreo intercalado. `start` = índice de frame (desde t0) de data[0].
