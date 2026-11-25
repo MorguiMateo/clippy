@@ -1,7 +1,7 @@
 //! Qué es "el juego": el proceso de la ventana activa que ocupa todo su monitor
 //! (pantalla completa o ventana sin bordes), salvo programas que no son juegos.
-//! Lo usan la elección del monitor a grabar, el modo "Solo juegos" (imagen y carpeta del clip) y el canal de
-//! audio "Juego". Una vez detectado queda fijo mientras siga abierto, aunque hagas Alt+Tab.
+//! Lo usan la elección del monitor a grabar, el modo "Solo juegos" (imagen del clip), la carpeta del clip y el
+//! canal de audio "Juego". Una vez detectado queda fijo mientras siga abierto, aunque hagas Alt+Tab.
 
 use windows::core::{w, HSTRING, PWSTR};
 use windows::Win32::Foundation::{CloseHandle, HANDLE, HWND, RECT};

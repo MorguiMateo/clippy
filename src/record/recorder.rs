@@ -527,10 +527,11 @@ fn save_clip(cfg: &Config, packets: &VecDeque<Packet>, enc: &Encoder, au: &Audio
         }
     }
 
-    // En "Solo juegos" el clip es del juego: va a una carpeta con su nombre. Lo demás, a la de los clips.
+    // Un clip del juego va a una carpeta con su nombre adentro de la de los clips: en "Solo juegos" siempre que haya
+    // juego, y en "Toda la pantalla" si el juego se ve al guardar (con Alt+Tab en el escritorio, a la de los clips).
     let game_dir = au.game.name().map(|g| clean_name(&g)).filter(|g| !g.is_empty());
     let dir = match game_dir {
-        Some(g) if cfg.capture_mode == CaptureMode::GamesOnly => cfg.output_dir.join(g),
+        Some(g) if cfg.capture_mode == CaptureMode::GamesOnly || au.game.visible() => cfg.output_dir.join(g),
         _ => cfg.output_dir.clone(),
     };
     let stamp = file_stamp();
