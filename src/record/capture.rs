@@ -255,7 +255,16 @@ impl Capture {
     /// resolución se escala adentro del video y uno de otra GPU se deja pasar (reiniciar perdería el buffer).
     pub fn aim(&mut self, monitor: HMONITOR, native: bool) -> Aim {
         let same_size = |o: &Output| (o.width, o.height) == (self.width, self.height);
-        if monitor == self.out.monitor && (!native || same_size(&self.out)) {
+        if monitor == self.out.monitor {
+            // Volvió al que se graba: la próxima vez que pase al salteado se vuelve a probar.
+            self.skipped = None;
+            if !native || same_size(&self.out) {
+                return Aim::Same;
+            }
+        }
+        // Ya se vio que no se puede seguir sin reiniciar: probarlo de nuevo cada 250 ms consultaría los monitores y
+        // cerraría y reabriría la duplicación del que se graba.
+        if !native && self.skipped == Some(monitor) {
             return Aim::Same;
         }
         if self.lost_on.contains(&monitor) {
