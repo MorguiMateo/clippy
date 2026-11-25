@@ -6,7 +6,7 @@ Grabador de repeticiones instantáneas para Windows, ultraliviano: graba siempre
 tiene encoder de video, usa el H.264 de Windows por procesador, hasta 1080p a 30 fps.
 
 Descarga y novedades en [clpy.vercel.app](https://clpy.vercel.app). Las versiones se publican en
-los [Releases](https://github.com/santiremedi/clippy/releases) de este repo, que es donde las busca
+los [Releases](https://github.com/MorguiMateo/clippy/releases) de este repo, que es donde las busca
 el actualizador automático.
 
 ## Compilar
@@ -16,7 +16,7 @@ cargo build --release
 ```
 
 El exe queda en `target/release/clippy.exe`. Para publicar se renombra a `Clippy.exe`
-(el actualizador busca ese nombre exacto en el último release de `santiremedi/clippy`).
+(el actualizador busca ese nombre exacto en el último release de `MorguiMateo/clippy`).
 
 Para probar mientras desarrollás, con los modos de prueba sin ventana (no van en el exe publicado).
 Compila en segundos porque no usa LTO; queda en `target/fast/clippy.exe`:

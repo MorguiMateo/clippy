@@ -19,7 +19,7 @@ use crate::i18n::{tr, trf};
 use crate::log::{app_dir, log};
 
 /// Repositorio público donde se publican las versiones (Releases).
-pub const REPO: &str = "santiremedi/clippy";
+pub const REPO: &str = "MorguiMateo/clippy";
 const HOUR: u64 = 60 * 60;
 const DAY: u64 = 24 * HOUR;
 
