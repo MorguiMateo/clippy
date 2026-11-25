@@ -4,6 +4,8 @@
 //!   `CLIPPY_TEST_ALIGN16=1`, el encoder falla con tamaños que no son múltiplo de 16 (`--test 8 <carpeta> 766`).
 //!   Con `CLIPPY_TEST_LOST=<segundos>`, a esos segundos se pierde la placa una vez, como en un reinicio del driver.
 //!   Con `CLIPPY_TEST_STALL=<segundos>`, pasado ese tiempo la captura se traba (la duplicación se pierde apenas se abre).
+//! - `--test-soak <minutos> <carpeta> [escenario] [segundos entre clips]`: graba un rato largo midiéndose a sí mismo y
+//!   escribe un informe de rendimiento y fugas (ver `perf`).
 //! - `--test-mic`: cuánto audio entrega cada micrófono en 3 s.
 //! - `--test-download`: descarga la versión publicada como el botón "Actualizar".
 //! - `--test-export`, `--test-frame`, `--test-strip`, `--test-covers`: ver `editor::devtools`.
@@ -24,6 +26,9 @@ pub fn run(args: &[String]) -> Option<i32> {
     }
     if let Some(i) = at("--test-fullscreen") {
         return Some(test_fullscreen(&args[i + 1..]));
+    }
+    if let Some(i) = at("--test-soak") {
+        return Some(crate::perf::soak(&args[i + 1..]));
     }
     if at("--test-mic").is_some() {
         return Some(test_mic());
@@ -83,13 +88,13 @@ fn set_mode(size: Option<(u32, u32)>) -> windows::Win32::Graphics::Gdi::DISP_CHA
     unsafe { ChangeDisplaySettingsW(dm.as_ref().map(|d| d as *const _), CDS_FULLSCREEN) }
 }
 
-fn test_mode(args: &[String]) -> i32 {
-    let wait: u64 = args.first().and_then(|s| s.parse().ok()).unwrap_or(8);
-    let dir = args.get(1).map(std::path::PathBuf::from).unwrap_or_else(std::env::temp_dir);
+/// La configuración de una prueba de grabación: la de `config.json`, guardando en `dir`, sin el sonido de guardado y con
+/// lo que cambie `scenario` (game|desktop|mic|juegos|cursor|hevc o una resolución).
+pub fn test_config(dir: std::path::PathBuf, scenario: Option<&str>) -> crate::config::Config {
     let mut cfg = crate::config::load();
     cfg.output_dir = dir;
     cfg.sound_on_save = false;
-    match args.get(2).map(|s| s.as_str()) {
+    match scenario {
         Some("game") => (cfg.game_audio, cfg.desktop_audio) = (true, false),
         Some("desktop") => (cfg.game_audio, cfg.desktop_audio) = (false, true),
         Some("mic") => (cfg.game_audio, cfg.desktop_audio, cfg.mic_audio) = (false, false, true),
@@ -100,6 +105,13 @@ fn test_mode(args: &[String]) -> i32 {
         Some(r) if r.parse::<u32>().is_ok() => cfg.resolution = r.parse().unwrap(),
         _ => {}
     }
+    cfg
+}
+
+fn test_mode(args: &[String]) -> i32 {
+    let wait: u64 = args.first().and_then(|s| s.parse().ok()).unwrap_or(8);
+    let dir = args.get(1).map(std::path::PathBuf::from).unwrap_or_else(std::env::temp_dir);
+    let cfg = test_config(dir, args.get(2).map(|s| s.as_str()));
     let (tx, rx) = std::sync::mpsc::channel();
     let notify: crate::record::recorder::Notify = Arc::new(move |e| {
         let _ = tx.send(e);

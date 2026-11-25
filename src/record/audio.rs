@@ -520,6 +520,13 @@ impl AudioBuf {
         }
     }
 
+    /// Memoria que ocupa el sonido guardado (bytes), para medir el rendimiento.
+    #[cfg(feature = "devtools")]
+    pub fn bytes(&self) -> usize {
+        let sound: usize = self.blocks.iter().map(|(_, b)| if let Block::Sound(s) = b { s.len() } else { 0 }).sum();
+        (sound + self.tail.capacity()) * 2
+    }
+
     /// Frames guardados y el pico (para la prueba de micrófonos).
     #[cfg(feature = "devtools")]
     pub fn stats(&self) -> (i64, u16) {

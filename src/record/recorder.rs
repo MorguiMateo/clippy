@@ -329,8 +329,12 @@ fn session(
     // Desde cuándo el juego está adelante en el monitor que se graba, y si ya se avisó que ahí no llegan imágenes.
     let mut front_since: Option<i64> = None;
     let mut stall_told = false;
+    #[cfg(feature = "devtools")]
+    let mut perf = crate::perf::Loop::default();
 
     loop {
+        #[cfg(feature = "devtools")]
+        let woke = now_100ns();
         loop {
             match rx.try_recv() {
                 Ok(Cmd::Stop) | Err(TryRecvError::Disconnected) => return Ok(End::Stop),
@@ -417,6 +421,10 @@ fn session(
 
         if now >= next_frame {
             let pts = (now / frame_dur) * frame_dur;
+            #[cfg(feature = "devtools")]
+            if next_frame > 0 {
+                perf.missed((pts - next_frame) / frame_dur);
+            }
             if let Some(c) = conv.as_mut() {
                 // Al encoder, en orden, los cuadros que la GPU ya terminó de convertir (sin esperarla: con el juego al
                 // 100 % la conversión queda en la cola detrás de sus cuadros). Si el encoder está ocupado, esperan.
@@ -431,6 +439,8 @@ fn session(
                         anyhow::bail!("encoder de prueba: {w}x{h} no es múltiplo de 16 (0x80004005)");
                     }
                     cap.check(enc.feed(&r.tex, r.pts, frame_dur))?;
+                    #[cfg(feature = "devtools")]
+                    perf.fed();
                     c.pop();
                 }
                 if visible {
@@ -451,6 +461,13 @@ fn session(
         au.mic.buf.trim_before(a_min);
         au.masks.retain(|m| m.1 > now - keep - 20_000_000);
 
+        #[cfg(feature = "devtools")]
+        perf.end(now, now_100ns() - woke, fps, || {
+            let mb = |b: usize| b as f64 / 1_048_576.0;
+            let video = packets.iter().map(|p| p.data.len()).sum();
+            let audio = au.game_ch.buf.bytes() + au.desktop.buf.bytes() + au.mic.buf.bytes();
+            (mb(video), packets.len(), mb(audio))
+        });
         timer.sleep(next_frame - (now_100ns() - t0));
     }
 }
@@ -587,6 +604,8 @@ fn save_clip(cfg: &Config, packets: &VecDeque<Packet>, enc: &Encoder, au: &Audio
             Ok(p) => {
                 let (held, mixed, written) = (ms(held), ms(mixed), ms(t.elapsed() - mixed));
                 log(&format!("clip guardado: {} (grabación frenada {held} ms, mezcla {mixed} ms, MP4 {written} ms)", p.display()));
+                #[cfg(feature = "devtools")]
+                crate::perf::saved(held as u64, mixed as u64, written as u64);
                 notify(Event::Saved(p));
             }
             Err(e) => {

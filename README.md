@@ -40,6 +40,7 @@ Solo con `--features devtools`:
 | --- | --- |
 | `--test <seg> <carpeta> [game\|desktop\|mic\|juegos\|cursor\|hevc\|720\|1080\|1440]` | Graba, guarda un clip y sale (imprime el encoder y el juego detectado; `cursor` dibuja el cursor del mouse; `hevc` graba en H.265; un número elige la resolución del clip). Con la variable `CLIPPY_CPU_ENCODER=1`, codifica con el procesador como en una placa sin encoder; con `CLIPPY_TEST_LOST=<seg>`, a esos segundos se pierde la placa una vez, como en un reinicio del driver; con `CLIPPY_TEST_STALL=<seg>`, la captura se traba pasado ese tiempo. |
 | `--test-fullscreen <ancho>x<alto> <seg> [alttab]` | Un juego de mentira en pantalla completa exclusiva (cambia el modo de video, como una resolución estirada); con `alttab`, sale y vuelve cada 6 s. Corré una copia del exe con otro nombre para que cuente como juego. |
+| `--test-soak <minutos> <carpeta> [escenario\|-] [segundos entre clips]` | Graba un rato largo midiéndose a sí misma (procesador, RAM, memoria de video, placa, handles, hilos, cuadros perdidos, tiempos al guardar), guarda un clip cada tanto (60 s) y deja en la carpeta `perf.jsonl`, `informe.json` e `informe.md` con el veredicto y las fugas. Los escenarios son los de `--test`. Claude lo usa con la skill `rendimiento` (`.claude/skills/rendimiento`). |
 | `--test-mic` | Cuánto audio entrega cada micrófono en 3 s. |
 | `--test-download` | Descarga la versión publicada como el botón "Actualizar". |
 | `--test-export`, `--test-frame`, `--test-strip` | Pruebas del editor (ver `src/editor/devtools.rs`). |

@@ -9,6 +9,8 @@ mod editor;
 mod i18n;
 mod log;
 mod mf;
+#[cfg(feature = "devtools")]
+mod perf;
 mod record;
 mod settings;
 mod ui_kit;

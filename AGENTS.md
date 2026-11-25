@@ -106,6 +106,7 @@ corre aislada y sin ventanas:
 - **Grabación**: `--test` con `APPDATA` apuntando a una carpeta propia. Así el `clippy.log` y el
   `config.json` (los de fábrica) son solo de esa corrida.
 - **Editor**: `--test-export`, `--test-frame`, `--test-strip`, `--test-covers` (ver `editor/devtools.rs`).
+- **Rendimiento y fugas**: `--test-soak` (ver la skill `rendimiento`). Mide procesador y placa: va de a uno por vez.
 - **De a uno por vez**, porque tocan cosas de toda la PC: `--settings` y `--editor` (candado de instancia
   única y título de ventana: chocan con otro agente o con el Clippy del usuario), `CLIPPY_TEST_MODE` (cambia
   la resolución del monitor) y medir FPS o CPU. Abrí ventanas solo si el cambio toca la interfaz, al final.
