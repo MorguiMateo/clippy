@@ -535,6 +535,7 @@ impl Mix {
 
 /// Arma el trabajo de guardado y lo lanza en otro hilo. Devuelve false si no había nada que guardar.
 fn save_clip(cfg: &Config, packets: &VecDeque<Packet>, enc: &Encoder, au: &AudioState, now: i64, frame_dur: i64, notify: &Notify) -> bool {
+    let started = std::time::Instant::now();
     let keep = cfg.seconds as i64 * 10_000_000;
     let no_video = || tr!("todavía no hay video en el buffer", "there's no video in the buffer yet", "ainda não há vídeo no buffer");
     let fail = |m: &str| {
@@ -574,11 +575,18 @@ fn save_clip(cfg: &Config, packets: &VecDeque<Packet>, enc: &Encoder, au: &Audio
         i += 1;
     }
     let notify = notify.clone();
+    // Cuánto se frenó el hilo de grabación y cuánto tardó cada paso del guardado (lo lee tools/medir.ps1).
+    let held = started.elapsed();
     std::thread::spawn(move || {
-        let job = mux::Job { path, video_type, packets: pk, base, frame_dur, audio: audio.map(|m| m.run()) };
+        let ms = |d: std::time::Duration| d.as_millis();
+        let t = std::time::Instant::now();
+        let audio = audio.map(|m| m.run());
+        let mixed = t.elapsed();
+        let job = mux::Job { path, video_type, packets: pk, base, frame_dur, audio };
         match mux::write(job) {
             Ok(p) => {
-                log(&format!("clip guardado: {}", p.display()));
+                let (held, mixed, written) = (ms(held), ms(mixed), ms(t.elapsed() - mixed));
+                log(&format!("clip guardado: {} (grabación frenada {held} ms, mezcla {mixed} ms, MP4 {written} ms)", p.display()));
                 notify(Event::Saved(p));
             }
             Err(e) => {

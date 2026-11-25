@@ -45,6 +45,15 @@ Solo con `--features devtools`:
 | `--test-export`, `--test-frame`, `--test-strip` | Pruebas del editor (ver `src/editor/devtools.rs`). |
 | `--settings` o `--editor` con `CLIPPY_TEST_WINDOW=<ancho>x<alto>` | La ventana se abre de ese tamaño y sin maximizar, para ver cómo queda angosta (`760x560` es la de ajustes más chica). |
 
+Para medir cuánto procesador, RAM y placa usa la grabadora al guardar clips (con cualquier versión del exe, para
+comparar), con Clippy grabando:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\medir.ps1 -Nombre 0.4.6
+```
+
+Deja en el Escritorio, en `clippy-medicion\`, un CSV por corrida (una fila por segundo) y `resumen.csv` (una fila por corrida).
+
 ## Mapa del código
 
 ```
