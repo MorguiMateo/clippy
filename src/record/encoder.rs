@@ -58,8 +58,9 @@ pub struct Encoder {
     pub pending_input: u32,
     /// SPS y PPS del último fotograma clave: los que de verdad usa el video.
     seq_header: Option<Vec<u8>>,
-    provides_samples: bool,
-    out_size: u32,
+    /// Donde escribe sus paquetes un encoder que no trae muestras propias (el de procesador): se crea una vez y se
+    /// reusa, en vez de pedir 4 MB de memoria en cada consulta.
+    out_sample: Option<IMFSample>,
     pub name: String,
     /// Con qué formato codifica (H.265 si se pidió y la placa lo tiene).
     pub codec: Codec,
@@ -164,6 +165,13 @@ impl Encoder {
         let provides = info.dwFlags
             & (MFT_OUTPUT_STREAM_PROVIDES_SAMPLES.0 as u32 | MFT_OUTPUT_STREAM_CAN_PROVIDE_SAMPLES.0 as u32)
             != 0;
+        let out_sample = if provides {
+            None
+        } else {
+            let s = MFCreateSample()?;
+            s.AddBuffer(&MFCreateMemoryBuffer(info.cbSize.max(4 * 1024 * 1024))?)?;
+            Some(s)
+        };
 
         mft.ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0)?;
         mft.ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0)?;
@@ -177,8 +185,7 @@ impl Encoder {
             path,
             pending_input: 0,
             seq_header: None,
-            provides_samples: provides,
-            out_size: info.cbSize.max(4 * 1024 * 1024),
+            out_sample,
             name,
             codec,
             width: w,
@@ -225,12 +232,14 @@ impl Encoder {
     /// Saca un paquete del encoder, si tiene uno listo.
     fn pull(&mut self, out: &mut Vec<Packet>) -> Result<bool> {
         unsafe {
-            let own = if self.provides_samples {
-                None
-            } else {
-                let s = MFCreateSample()?;
-                s.AddBuffer(&MFCreateMemoryBuffer(self.out_size)?)?;
-                Some(s)
+            let own = match &self.out_sample {
+                Some(s) => {
+                    // Sin las marcas del paquete anterior (ej. fotograma clave) y vacía.
+                    s.DeleteAllItems()?;
+                    s.GetBufferByIndex(0)?.SetCurrentLength(0)?;
+                    Some(s.clone())
+                }
+                None => None,
             };
             let mut buf = [MFT_OUTPUT_DATA_BUFFER {
                 dwStreamID: 0,
