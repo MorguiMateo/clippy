@@ -285,6 +285,9 @@ fn session(
     // El encoder por procesador puede pedir menos que lo elegido.
     let (w, h, fps) = (enc.width, enc.height, enc.fps);
     let frame_dur = 10_000_000i64 / fps as i64;
+    // Imágenes convertidas que se reservan en la placa. El encoder de la placa retiene algunas en su cola y necesita
+    // margen; el de procesador copia cada una al recibirla, así que alcanza con las que esperan en la fila.
+    let pool = if enc.device() == Device::Cpu { 4 } else { 8 };
     *untested = Some((w, h));
     // Prueba (CLIPPY_TEST_ALIGN16): un encoder que, como Quick Sync, falla en el primer cuadro si el tamaño no
     // es múltiplo de 16.
@@ -397,7 +400,7 @@ fn session(
         }
         if let Some(f) = &cap.latest {
             if !conv.as_ref().is_some_and(|c| c.is_for(f)) {
-                conv = Some(cap.check(Converter::new(&cap.device, &cap.context, f, w, h, fps, 8))?);
+                conv = Some(cap.check(Converter::new(&cap.device, &cap.context, f, w, h, fps, pool))?);
                 probe_at = Some(now + PROBE_AFTER);
             }
         }
