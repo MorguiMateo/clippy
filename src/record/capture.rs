@@ -162,6 +162,7 @@ impl Capture {
             if let Ok(mt) = device.cast::<ID3D11Multithread>() {
                 let _ = mt.SetMultithreadProtected(true);
             }
+            raise_gpu_priority(&device);
             let mut cap = Capture {
                 device,
                 context,
@@ -501,6 +502,46 @@ fn test_stall(now: i64, got: windows::core::Result<()>, dup: &IDXGIOutputDuplica
         }
     }
     Err(DXGI_ERROR_ACCESS_LOST.into())
+}
+
+/// Sube la prioridad de Clippy en la placa (como OBS) para que la conversión y el encoder no queden detrás de un
+/// juego al 100 %. Puede fallar sin permisos de administrador: queda en el log qué se pudo aplicar y qué no.
+fn raise_gpu_priority(device: &ID3D11Device) {
+    use windows::Wdk::Graphics::Direct3D::{
+        D3DKMTSetProcessSchedulingPriorityClass, D3DKMT_SCHEDULINGPRIORITYCLASS_ABOVE_NORMAL,
+        D3DKMT_SCHEDULINGPRIORITYCLASS_HIGH, D3DKMT_SCHEDULINGPRIORITYCLASS_REALTIME,
+    };
+    use windows::Win32::System::Threading::GetCurrentProcess;
+
+    unsafe {
+        let classes = [
+            ("realtime", D3DKMT_SCHEDULINGPRIORITYCLASS_REALTIME),
+            ("high", D3DKMT_SCHEDULINGPRIORITYCLASS_HIGH),
+            ("above_normal", D3DKMT_SCHEDULINGPRIORITYCLASS_ABOVE_NORMAL),
+        ];
+        let proc = GetCurrentProcess();
+        let mut failed = Vec::new();
+        let mut proc_msg = None;
+        for (name, class) in classes {
+            let st = D3DKMTSetProcessSchedulingPriorityClass(proc, class);
+            if st.is_ok() {
+                proc_msg = Some(if failed.is_empty() {
+                    format!("proceso {name}")
+                } else {
+                    format!("proceso {name} (fallaron {})", failed.join(", "))
+                });
+                break;
+            }
+            failed.push(format!("{name}: {:#010x}", st.0 as u32));
+        }
+        let proc_msg = proc_msg.unwrap_or_else(|| format!("proceso sin cambios ({})", failed.join(", ")));
+
+        let dev_msg = match device.cast::<IDXGIDevice>().and_then(|d| d.SetGPUThreadPriority(7)) {
+            Ok(()) => "dispositivo DXGI +7".to_string(),
+            Err(e) => format!("dispositivo DXGI sin cambios ({e})"),
+        };
+        log(&format!("prioridad en la placa: {proc_msg}; {dev_msg}"));
+    }
 }
 
 /// Monitores conectados al escritorio que ve esta GPU.
