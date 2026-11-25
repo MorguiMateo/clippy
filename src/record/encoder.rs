@@ -308,7 +308,7 @@ impl Encoder {
                     let _ = api.SetValue(&CODECAPI_AVEncVideoForceKeyFrame, &VARIANT::from(1u32));
                 }
             }
-            let buf = match &self.path {
+            let (buf, pts) = match &mut self.path {
                 Path::Gpu { .. } => {
                     let buf = MFCreateDXGISurfaceBuffer(&ID3D11Texture2D::IID, tex, 0, false)?;
                     if let Ok(b2) = buf.cast::<IMF2DBuffer>() {
@@ -316,9 +316,16 @@ impl Encoder {
                             let _ = buf.SetCurrentLength(len);
                         }
                     }
-                    buf
+                    (buf, pts)
                 }
-                Path::Cpu(r) => r.read(tex)?,
+                // Sale la imagen anterior (la de esta queda copiándose): la primera vez, ninguna.
+                Path::Cpu(r) => match r.read(tex, pts)? {
+                    Some(prev) => prev,
+                    None => {
+                        self.pending_input -= 1;
+                        return Ok(());
+                    }
+                },
             };
             let s = MFCreateSample()?;
             s.AddBuffer(&buf)?;
@@ -480,8 +487,12 @@ unsafe fn string_attr(act: &IMFActivate, key: &GUID) -> Option<String> {
 }
 
 /// Copia las imágenes NV12 ya convertidas en la GPU a la memoria, para el encoder por procesador.
+/// Usa dos copias que se turnan: mientras la placa copia una imagen, se lee la anterior, que ya terminó. Leer la
+/// recién copiada frenaría el hilo de grabación hasta que la placa, ocupada con el juego, llegue a copiarla.
 struct Readback {
-    staging: ID3D11Texture2D,
+    staging: [ID3D11Texture2D; 2],
+    /// La copia que se está escribiendo y el tiempo de su imagen (se lee en la próxima).
+    pending: Option<(usize, i64)>,
     context: ID3D11DeviceContext,
     w: usize,
     h: usize,
@@ -501,16 +512,23 @@ impl Readback {
             CPUAccessFlags: D3D11_CPU_ACCESS_READ.0 as u32,
             MiscFlags: 0,
         };
-        let mut staging = None;
-        device.CreateTexture2D(&d, None, Some(&mut staging))?;
-        Ok(Self { staging: staging.unwrap(), context: device.GetImmediateContext()?, w: w as usize, h: h as usize })
+        let one = || -> Result<ID3D11Texture2D> {
+            let mut t = None;
+            device.CreateTexture2D(&d, None, Some(&mut t))?;
+            t.ok_or_else(|| anyhow!("sin textura de lectura"))
+        };
+        Ok(Self { staging: [one()?, one()?], pending: None, context: device.GetImmediateContext()?, w: w as usize, h: h as usize })
     }
 
-    /// La imagen en un buffer de memoria con las filas juntas: el plano Y y después el UV intercalado.
-    unsafe fn read(&self, tex: &ID3D11Texture2D) -> Result<IMFMediaBuffer> {
-        self.context.CopyResource(&self.staging, tex);
+    /// Manda a copiar `tex` (de tiempo `pts`) y devuelve la imagen anterior con su tiempo, en un buffer de memoria con
+    /// las filas juntas: el plano Y y después el UV intercalado.
+    unsafe fn read(&mut self, tex: &ID3D11Texture2D, pts: i64) -> Result<Option<(IMFMediaBuffer, i64)>> {
+        let i = self.pending.map_or(0, |(j, _)| 1 - j);
+        self.context.CopyResource(&self.staging[i], tex);
+        let Some((prev, prev_pts)) = self.pending.replace((i, pts)) else { return Ok(None) };
+        let staging = &self.staging[prev];
         let mut m = D3D11_MAPPED_SUBRESOURCE::default();
-        self.context.Map(&self.staging, 0, D3D11_MAP_READ, 0, Some(&mut m))?;
+        self.context.Map(staging, 0, D3D11_MAP_READ, 0, Some(&mut m))?;
         let len = self.w * self.h * 3 / 2;
         let copy = || -> Result<IMFMediaBuffer> {
             let buf = MFCreateMemoryBuffer(len as u32)?;
@@ -525,8 +543,8 @@ impl Readback {
             Ok(buf)
         };
         let r = copy();
-        self.context.Unmap(&self.staging, 0);
-        r
+        self.context.Unmap(staging, 0);
+        r.map(|buf| Some((buf, prev_pts)))
     }
 }
 
