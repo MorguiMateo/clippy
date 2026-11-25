@@ -389,7 +389,12 @@ fn session(
                 front_since = None;
             }
         }
-        cap.poll(now)?;
+        let visible = cfg.capture_mode == CaptureMode::Screen || au.game.visible();
+        // En "Solo juegos" sin el juego a la vista el video va en negro: no se copia una pantalla que se descartaría.
+        // La primera imagen sí hace falta, para preparar la conversión.
+        if visible || conv.is_none() {
+            cap.poll(now)?;
+        }
         if let Some(f) = &cap.latest {
             if !conv.as_ref().is_some_and(|c| c.is_for(f)) {
                 conv = Some(cap.check(Converter::new(&cap.device, &cap.context, f, w, h, fps, 8))?);
@@ -409,7 +414,6 @@ fn session(
 
         if now >= next_frame {
             let pts = (now / frame_dur) * frame_dur;
-            let visible = cfg.capture_mode == CaptureMode::Screen || au.game.visible();
             if let Some(c) = conv.as_mut() {
                 // Al encoder, en orden, los cuadros que la GPU ya terminó de convertir (sin esperarla: con el juego al
                 // 100 % la conversión queda en la cola detrás de sus cuadros). Si el encoder está ocupado, esperan.
