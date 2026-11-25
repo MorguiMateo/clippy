@@ -431,7 +431,7 @@ fn session(
                     cap.draw_cursor(au.game.pid().is_none());
                     cap.check(c.convert(pts))?;
                 } else {
-                    c.black(pts);
+                    cap.check(c.black(pts))?;
                 }
             }
             next_frame = pts + frame_dur;

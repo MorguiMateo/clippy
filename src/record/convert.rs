@@ -33,7 +33,10 @@ pub struct Converter {
     input: ID3D11VideoProcessorInputView,
     pool: Vec<Slot>,
     next: usize,
-    black: ID3D11Texture2D,
+    /// Tamaño del video (para crear el cuadro negro).
+    size: (u32, u32),
+    /// Cuadro negro del modo "Solo juegos": se crea la primera vez que hace falta.
+    black: Option<ID3D11Texture2D>,
     /// Cuadros en orden para el encoder: (lugar del pool, o None si es el negro; tiempo).
     queue: VecDeque<(Option<usize>, i64)>,
 }
@@ -146,26 +149,6 @@ impl Converter {
             let black = D3D11_VIDEO_COLOR { Anonymous: D3D11_VIDEO_COLOR_0 { RGBA: D3D11_VIDEO_COLOR_RGBA { R: 0.0, G: 0.0, B: 0.0, A: 1.0 } } };
             vctx.VideoProcessorSetOutputBackgroundColor(&vp, false, &black);
 
-            // Cuadro negro (Y=16, UV=128) para el modo "solo juegos" cuando no hay juego en pantalla.
-            let (bw, bh) = (w as usize, h as usize);
-            let mut px = vec![16u8; bw * bh];
-            px.resize(bw * bh * 3 / 2, 128);
-            let init = D3D11_SUBRESOURCE_DATA { pSysMem: px.as_ptr() as *const _, SysMemPitch: w, SysMemSlicePitch: 0 };
-            let bd = D3D11_TEXTURE2D_DESC {
-                Width: w,
-                Height: h,
-                MipLevels: 1,
-                ArraySize: 1,
-                Format: DXGI_FORMAT_NV12,
-                SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
-                Usage: D3D11_USAGE_DEFAULT,
-                BindFlags: D3D11_BIND_RENDER_TARGET.0 as u32,
-                CPUAccessFlags: 0,
-                MiscFlags: 0,
-            };
-            let mut black = None;
-            device.CreateTexture2D(&bd, Some(&init), Some(&mut black))?;
-
             Ok(Self {
                 src: src.clone(),
                 device: device.clone(),
@@ -175,7 +158,8 @@ impl Converter {
                 input: input.unwrap(),
                 pool,
                 next: 0,
-                black: black.unwrap(),
+                size: (w, h),
+                black: None,
                 queue: VecDeque::new(),
             })
         }
@@ -186,10 +170,39 @@ impl Converter {
     }
 
     /// Pone en la fila el cuadro negro (modo "Solo juegos" sin el juego en pantalla).
-    pub fn black(&mut self, pts: i64) {
-        if self.queue.len() < IN_FLIGHT {
-            self.queue.push_back((None, pts));
+    pub fn black(&mut self, pts: i64) -> Result<()> {
+        if self.queue.len() >= IN_FLIGHT {
+            return Ok(());
         }
+        if self.black.is_none() {
+            self.black = Some(self.black_texture()?);
+        }
+        self.queue.push_back((None, pts));
+        Ok(())
+    }
+
+    /// Cuadro negro en NV12 (Y=16, UV=128).
+    fn black_texture(&self) -> Result<ID3D11Texture2D> {
+        let (w, h) = self.size;
+        let (bw, bh) = (w as usize, h as usize);
+        let mut px = vec![16u8; bw * bh];
+        px.resize(bw * bh * 3 / 2, 128);
+        let init = D3D11_SUBRESOURCE_DATA { pSysMem: px.as_ptr() as *const _, SysMemPitch: w, SysMemSlicePitch: 0 };
+        let bd = D3D11_TEXTURE2D_DESC {
+            Width: w,
+            Height: h,
+            MipLevels: 1,
+            ArraySize: 1,
+            Format: DXGI_FORMAT_NV12,
+            SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+            Usage: D3D11_USAGE_DEFAULT,
+            BindFlags: D3D11_BIND_RENDER_TARGET.0 as u32,
+            CPUAccessFlags: 0,
+            MiscFlags: 0,
+        };
+        let mut black = None;
+        unsafe { self.device.CreateTexture2D(&bd, Some(&init), Some(&mut black))? };
+        black.ok_or_else(|| anyhow::anyhow!("sin cuadro negro"))
     }
 
     /// Manda a convertir la imagen actual a una textura del pool, sin esperar a la GPU: `ready` la entrega cuando
@@ -222,7 +235,8 @@ impl Converter {
     /// (sospecha con AMD) que la leen sin esperar a la conversión y graban cuadros vacíos (verdes).
     pub fn ready(&self) -> Result<Option<Ready>> {
         let Some(&(slot, pts)) = self.queue.front() else { return Ok(None) };
-        let Some(i) = slot else { return Ok(Some(Ready { tex: self.black.clone(), pts, converted: false })) };
+        // El negro se crea antes de ponerlo en la fila.
+        let Some(i) = slot else { return Ok(self.black.clone().map(|tex| Ready { tex, pts, converted: false })) };
         let s = &self.pool[i];
         let mut done = BOOL(0);
         let size = std::mem::size_of::<BOOL>() as u32;
