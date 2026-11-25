@@ -180,7 +180,7 @@ fn open_game(pid: u32, window: HWND) -> Option<Proc> {
             String::from_utf16_lossy(&buf[..len as usize])
         } else {
             // Algunos anticheats no dejan abrir el proceso: el nombre sale de la lista de procesos.
-            snapshot().into_iter().find(|(p, _)| *p == pid).map(|(_, n)| n)?
+            exe_name(pid)?
         };
         let exe = exe_stem(&path);
         if !is_game(&exe) {
@@ -236,30 +236,38 @@ fn product_name(path: &str) -> Option<String> {
 
 fn alive(p: &Proc) -> bool {
     if p.handle.is_invalid() {
-        return snapshot().iter().any(|(pid, _)| *pid == p.pid);
+        // Mientras su ventana exista, el proceso sigue: no hace falta recorrer la lista de procesos.
+        let mut owner = 0u32;
+        if unsafe { IsWindow(p.window).as_bool() && GetWindowThreadProcessId(p.window, Some(&mut owner)) != 0 } && owner == p.pid {
+            return true;
+        }
+        return exe_name(p.pid).is_some();
     }
     let mut code = 0u32;
     unsafe { GetExitCodeProcess(p.handle, &mut code).is_ok() && code == STILL_ACTIVE }
 }
 
-/// (pid, nombre.exe) de todos los procesos.
-fn snapshot() -> Vec<(u32, String)> {
-    let mut v = Vec::new();
+/// Nombre del ejecutable ("juego.exe") del proceso `pid`, buscándolo en la lista de procesos. None si ya no está.
+fn exe_name(pid: u32) -> Option<String> {
     unsafe {
-        let Ok(snap) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else { return v };
+        let snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0).ok()?;
         let mut e = PROCESSENTRY32W { dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32, ..Default::default() };
+        let mut found = None;
         if Process32FirstW(snap, &mut e).is_ok() {
             loop {
-                let n = e.szExeFile.iter().position(|&c| c == 0).unwrap_or(e.szExeFile.len());
-                v.push((e.th32ProcessID, String::from_utf16_lossy(&e.szExeFile[..n])));
+                if e.th32ProcessID == pid {
+                    let n = e.szExeFile.iter().position(|&c| c == 0).unwrap_or(e.szExeFile.len());
+                    found = Some(String::from_utf16_lossy(&e.szExeFile[..n]));
+                    break;
+                }
                 if Process32NextW(snap, &mut e).is_err() {
                     break;
                 }
             }
         }
         let _ = CloseHandle(snap);
+        found
     }
-    v
 }
 
 /// (PID, ventana) de la ventana activa si ocupa todo su monitor. El escritorio, las ventanas normales y las
