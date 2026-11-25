@@ -12,7 +12,6 @@
 //! el clip salía entrecortado.
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 
@@ -22,8 +21,9 @@ use windows::Win32::Foundation::{CloseHandle, HANDLE};
 use windows::Win32::Media::Audio::*;
 use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, CLSCTX_ALL, COINIT_MULTITHREADED};
 use windows::Win32::System::Threading::{
-    CreateEventW, GetCurrentThread, SetThreadPriority, WaitForSingleObject, THREAD_PRIORITY_TIME_CRITICAL,
+    CreateEventW, GetCurrentThread, SetEvent, SetThreadPriority, WaitForMultipleObjects, THREAD_PRIORITY_TIME_CRITICAL,
 };
+use windows::Win32::Foundation::WAIT_OBJECT_0;
 
 use crate::i18n::tr;
 use crate::mf::{frames_at, RATE};
@@ -45,14 +45,30 @@ pub struct Audio {
     pub source: Source,
     pub device_id: String,
     shared: Arc<Shared>,
+    thread: Option<std::thread::JoinHandle<()>>,
 }
 
 /// Lo que comparten la captura y su hilo.
-#[derive(Default)]
 struct Shared {
     /// Paquetes leídos que todavía no pasaron al buffer, y el error si la lectura se cortó.
     read: Mutex<(Vec<Packet>, Option<anyhow::Error>)>,
-    stop: AtomicBool,
+    /// Despierta al hilo para que cierre (sin esperar a su próxima vuelta).
+    stop: Event,
+}
+
+/// Un evento de Windows, cerrado al soltarlo.
+struct Event(HANDLE);
+
+// Un HANDLE de evento se puede usar desde cualquier hilo.
+unsafe impl Send for Event {}
+unsafe impl Sync for Event {}
+
+impl Drop for Event {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = CloseHandle(self.0);
+        }
+    }
 }
 
 /// Un paquete de WASAPI ya en estéreo (None = silencio), con su marca QPC (0 si no trae).
@@ -118,17 +134,20 @@ impl Audio {
     pub fn open(source: Source) -> Result<Self> {
         let client = unsafe { Client::open(&source)? };
         let device_id = client.device_id.clone();
-        let shared = Arc::new(Shared::default());
+        let stop = Event(unsafe { CreateEventW(None, false, false, PCWSTR::null())? });
+        let shared = Arc::new(Shared { read: Mutex::default(), stop });
         let s = shared.clone();
-        std::thread::Builder::new().name("audio".into()).spawn(move || unsafe {
+        let thread = std::thread::Builder::new().name("audio".into()).spawn(move || unsafe {
             let com = CoInitializeEx(None, COINIT_MULTITHREADED).is_ok();
             // Solo espera eventos y baja cada paquete a estéreo: la prioridad no le suma CPU, solo
             // hace que llegue a tiempo aunque el juego ocupe el procesador.
             let _ = SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
             let mut got = Vec::new();
-            while !s.stop.load(Ordering::Relaxed) {
+            loop {
                 // Con tope: la captura por proceso no avisa nada mientras el juego está callado.
-                WaitForSingleObject(client.event, 100);
+                if WaitForMultipleObjects(&[client.event, s.stop.0], false, 100).0 == WAIT_OBJECT_0.0 + 1 {
+                    break;
+                }
                 let r = client.read(&mut got);
                 let mut read = s.read.lock().unwrap();
                 read.0.append(&mut got);
@@ -142,7 +161,7 @@ impl Audio {
                 CoUninitialize();
             }
         })?;
-        Ok(Self { source, device_id, shared })
+        Ok(Self { source, device_id, shared, thread: Some(thread) })
     }
 
     /// Pasa al buffer los paquetes que leyó el hilo, ubicados en la línea de tiempo según su marca QPC.
@@ -160,9 +179,15 @@ impl Audio {
 }
 
 impl Drop for Audio {
+    /// Despierta al hilo y espera a que cierre el cliente: así no quedan hilos ni handles de WASAPI vivos después de
+    /// cerrar la grabadora o de cambiar de fuente. Tarda lo que tarda `IAudioClient::Stop` (no la vuelta de 100 ms).
     fn drop(&mut self) {
-        // El hilo lo ve en su próxima vuelta (10 ms, o 100 ms si no suena nada) y cierra el cliente.
-        self.shared.stop.store(true, Ordering::Relaxed);
+        unsafe {
+            let _ = SetEvent(self.shared.stop.0);
+        }
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
     }
 }
 
