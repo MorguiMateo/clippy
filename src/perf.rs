@@ -650,6 +650,19 @@ fn floors(samples: &[&Sample], f: impl Fn(&Sample) -> f64) -> Vec<(f64, f64)> {
     out
 }
 
+/// Envolvente inferior: en cada punto, el mínimo de ese punto y todos los siguientes.
+/// Así un salto temporal que después vuelve a bajar (el heap reteniendo memoria un rato) no suma a la pendiente;
+/// solo cuenta una subida que no vuelve a bajar.
+fn lower_envelope(p: &[(f64, f64)]) -> Vec<(f64, f64)> {
+    let mut out = p.to_vec();
+    let mut min = f64::INFINITY;
+    for pt in out.iter_mut().rev() {
+        min = min.min(pt.1);
+        pt.1 = min;
+    }
+    out
+}
+
 /// Pendiente por minuto (mínimos cuadrados).
 fn slope(p: &[(f64, f64)]) -> f64 {
     let n = p.len() as f64;
@@ -684,27 +697,28 @@ fn analyze(i: &Input, samples: &[Sample]) -> Report {
         })
         .collect();
 
-    // Recurso, unidad, cómo se lee, cuánto puede subir por minuto y en total sin que sea una fuga, y si se descartan los
-    // tramos con el buffer achicado.
+    // Recurso, unidad, cómo se lee, cuánto puede subir por minuto y en total sin que sea una fuga, si se descartan los
+    // tramos con el buffer achicado (y se usa envolvente inferior), y duración mínima en minutos para dar veredicto.
     type Get = fn(&Sample) -> f64;
-    let checks: [(&'static str, &'static str, Get, f64, f64, bool); 7] = [
-        ("RAM privada", "MB", |s| s.privada_mb, 0.5, 5.0, false),
-        ("RAM fuera de los buffers de video y audio", "MB", |s| s.privada_mb - s.rec.as_ref().map_or(0.0, |r| r.video_mb + r.audio_mb), 0.5, 5.0, true),
-        ("memoria de video", "MB", |s| s.vram_mb, 0.5, 5.0, false),
-        ("handles", "", |s| s.handles as f64, 2.0, 20.0, false),
-        ("hilos", "", |s| s.hilos as f64, 0.2, 3.0, false),
-        ("objetos GDI", "", |s| s.gdi as f64, 1.0, 10.0, false),
-        ("objetos USER", "", |s| s.user as f64, 1.0, 10.0, false),
+    let checks: [(&'static str, &'static str, Get, f64, f64, bool, f64); 7] = [
+        ("RAM privada", "MB", |s| s.privada_mb, 0.5, 5.0, false, 0.0),
+        ("RAM fuera de los buffers de video y audio", "MB", |s| s.privada_mb - s.rec.as_ref().map_or(0.0, |r| r.video_mb + r.audio_mb), 0.5, 5.0, true, 30.0),
+        ("memoria de video", "MB", |s| s.vram_mb, 0.5, 5.0, false, 0.0),
+        ("handles", "", |s| s.handles as f64, 2.0, 20.0, false, 0.0),
+        ("hilos", "", |s| s.hilos as f64, 0.2, 3.0, false, 0.0),
+        ("objetos GDI", "", |s| s.gdi as f64, 1.0, 10.0, false, 0.0),
+        ("objetos USER", "", |s| s.user as f64, 1.0, 10.0, false, 0.0),
     ];
     let mut fugas = Vec::new();
-    for (recurso, unidad, get, per_min, total, skip_shrunk) in checks {
+    for (recurso, unidad, get, per_min, total, skip_shrunk, min_minutes) in checks {
         let all = floors(&steady, get);
         let f: Vec<(f64, f64)> = all.iter().zip(&shrunk).filter(|(_, &s)| !(skip_shrunk && s)).map(|(x, _)| *x).collect();
         let tramos_descartados = all.len() - f.len();
+        let f = if skip_shrunk { lower_envelope(&f) } else { f };
         let r = |x: f64| (x * 100.0).round() / 100.0;
         let (inicio, fin) = (f.first().map_or(0.0, |x| x.1), f.last().map_or(0.0, |x| x.1));
         let m = if f.len() >= 3 { slope(&f) } else { 0.0 };
-        let veredicto = if f.len() < 4 {
+        let veredicto = if f.len() < 4 || i.minutes < min_minutes {
             "corrida corta para saber"
         } else if m > per_min && fin - inicio > total {
             avisos.push(format!("Posible fuga de {recurso}: sube {:.2} {unidad}/min ({inicio:.1} → {fin:.1}).", m));
@@ -875,6 +889,9 @@ impl Report {
                 capitalize(f.recurso),
                 f.tramos_descartados
             );
+        }
+        if self.minutos < 30.0 {
+            m += "\nRAM fuera de los buffers de video y audio: hace falta una corrida de al menos 30 min para confirmar fuga (en corridas más cortas el heap puede subir y bajar ~40 MB sin que haya fuga).\n";
         }
         m += &format!("\n{}.\n", capitalize(&self.al_cerrar));
         if !self.eventos.is_empty() {

@@ -28,8 +28,9 @@ APPDATA="$D/datos" target/fast/clippy.exe --test-soak 10 "$D" desktop 60 > "$D/c
 Los argumentos son `<minutos> <carpeta> [escenario|-] [segundos entre clips]`. Con `-` queda el escenario de fábrica
 y podés pasar igual los segundos.
 
-- **Duración**: para buscar fugas, al menos 10 minutos. El buffer de fábrica (30 s) tarda eso más 15 s en llenarse y
-  las fugas se miden recién después. Para una comparación rápida de consumo alcanza con 3 minutos.
+- **Duración**: para confirmar fugas de RAM ("RAM fuera de los buffers"), al menos 30 minutos (en corridas más cortas
+  el heap sube y baja ~40 MB sin fuga y da "corrida corta para saber"). Para handles, hilos y VRAM alcanza con 10 minutos
+  (el buffer de fábrica tarda 30 s más 15 s en llenarse). Para una comparación rápida de consumo alcanza con 3 minutos.
 - **Escenarios** (los mismos de `--test`):
   - `desktop`: el escritorio y el audio del sistema.
   - `game`: el canal del juego.
@@ -73,8 +74,9 @@ El exe sale con 0 si todo está bien, con 3 si hay algo para revisar y con 1 si 
   - "RAM fuera de los buffers de video y audio" es la clave. Si sube la RAM privada pero esta no, es el buffer creciendo
     (por ejemplo, un video que se mueve más y pesa más), no una fuga.
   - En "RAM fuera de los buffers" no se miran los tramos con el buffer achicado (por debajo del 75 % del más alto hasta
-    ahí, por ejemplo con el juego en pausa). Ahí el heap no devuelve todo lo que soltó el buffer y sube de un escalón
-    sin que sea una fuga. `tramos_descartados` dice cuántos fueron.
+    ahí, por ejemplo con el juego en pausa), se usa la envolvente inferior (mínimo de cada tramo y todos los siguientes,
+    así los saltos temporales del heap que vuelven a bajar no suman) y solo se confirma fuga en corridas de 30 min o más.
+    `tramos_descartados` dice cuántos tramos con buffer achicado se omitieron.
   - `al_cerrar`: hilos y handles que quedaron después de cerrar la grabadora. Antes de medir, el soak hace una vuelta de
     calentamiento de 5 s con un clip (en `calentamiento\`, no cuenta entre los clips de la corrida), así que lo que
     Windows carga una sola vez (las DLL de Media Foundation y del encoder, ~95 handles) ya no aparece.
