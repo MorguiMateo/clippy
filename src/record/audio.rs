@@ -389,62 +389,145 @@ impl DefaultOutput {
     }
 }
 
-/// Buffer circular de PCM estéreo intercalado. `start` = índice de frame (desde t0) de data[0].
-#[derive(Default)]
+/// Frames por bloque de sonido: se cierran de a un segundo.
+const BLOCK: usize = RATE as usize;
+
+/// Un tramo del buffer: silencio (solo cuánto dura) o sonido (PCM estéreo intercalado, que no se modifica más: al
+/// guardar un clip se comparte sin copiarlo).
+#[derive(Clone)]
+enum Block {
+    Silence(usize),
+    Sound(Arc<[i16]>),
+}
+
+impl Block {
+    fn frames(&self) -> usize {
+        match self {
+            Block::Silence(n) => *n,
+            Block::Sound(s) => s.len() / 2,
+        }
+    }
+}
+
+/// Buffer de audio de un canal (PCM estéreo de 48 kHz) en bloques: el silencio no ocupa memoria y descartar lo viejo
+/// suelta bloques enteros. Las posiciones son frames desde t0.
+#[derive(Default, Clone)]
 pub struct AudioBuf {
-    pub start: i64,
-    pub data: VecDeque<i16>,
+    /// Dónde empieza lo guardado.
+    start: i64,
+    /// Bloques cerrados, con el frame donde empieza cada uno.
+    blocks: VecDeque<(i64, Block)>,
+    /// El sonido que todavía no completa un bloque: va a continuación del último.
+    tail: Vec<i16>,
 }
 
 impl AudioBuf {
+    /// Dónde termina el último bloque cerrado (y empieza `tail`).
+    fn closed_end(&self) -> i64 {
+        self.blocks.back().map_or(self.start, |(at, b)| at + b.frames() as i64)
+    }
+
     pub fn end(&self) -> i64 {
-        self.start + (self.data.len() / 2) as i64
+        self.closed_end() + (self.tail.len() / 2) as i64
+    }
+
+    /// Cierra `tail` como bloque de sonido.
+    fn close(&mut self) {
+        if !self.tail.is_empty() {
+            let at = self.closed_end();
+            self.blocks.push_back((at, Block::Sound(std::mem::take(&mut self.tail).into())));
+        }
+    }
+
+    fn silence(&mut self, frames: usize) {
+        if frames == 0 {
+            return;
+        }
+        self.close();
+        match self.blocks.back_mut() {
+            Some((_, Block::Silence(n))) => *n += frames,
+            _ => {
+                let at = self.closed_end();
+                self.blocks.push_back((at, Block::Silence(frames)));
+            }
+        }
+    }
+
+    fn sound(&mut self, samples: &[i16]) {
+        if self.tail.is_empty() {
+            self.tail.reserve_exact(BLOCK * 2);
+        }
+        self.tail.extend_from_slice(samples);
+        if self.tail.len() >= BLOCK * 2 {
+            self.close();
+        }
     }
 
     pub fn push_at(&mut self, pos: i64, samples: Option<&[i16]>, frames: usize) {
-        if self.data.is_empty() {
+        if self.blocks.is_empty() && self.tail.is_empty() {
             self.start = pos;
         }
         let end = self.end();
         let mut skip = 0usize;
         if pos > end + RATE / 100 {
-            // Hueco (no sonaba nada): rellenar con silencio para mantener la sincronía.
-            let gap = (pos - end) as usize;
-            self.data.extend(std::iter::repeat_n(0, gap * 2));
+            // Hueco (no sonaba nada): silencio para mantener la sincronía.
+            self.silence((pos - end) as usize);
         } else if pos < end - RATE / 50 {
             // Vamos adelantados: descartar la parte superpuesta.
             skip = ((end - pos) as usize).min(frames);
         }
         match samples {
-            Some(s) => self.data.extend(s[skip * 2..].iter().copied()),
-            None => self.data.extend(std::iter::repeat_n(0, (frames - skip) * 2)),
+            Some(s) => self.sound(&s[skip * 2..]),
+            None => self.silence(frames - skip),
         }
     }
 
+    /// Descarta los bloques que terminan antes de `frame` (el que lo contiene queda entero).
     pub fn trim_before(&mut self, frame: i64) {
-        if frame > self.start {
-            let n = ((frame - self.start) as usize).min(self.data.len() / 2);
-            self.data.drain(..n * 2);
-            self.start += n as i64;
+        while let Some((at, b)) = self.blocks.front() {
+            let end = at + b.frames() as i64;
+            if end > frame {
+                break;
+            }
+            self.start = end;
+            self.blocks.pop_front();
         }
     }
 
     /// Suma en `out` (estéreo intercalado, que empieza en el frame `from`) lo grabado en ese tramo,
-    /// multiplicado por `gain`. Recorre las dos mitades del buffer circular de corrido.
-    #[inline(never)] // se llama por tramo: copiarlo en cada llamada agranda el exe 3 KB sin ganar nada
+    /// multiplicado por `gain`. El silencio no suma nada.
+    #[inline(never)] // se llama por tramo: copiarlo en cada llamada agranda el exe sin ganar nada
     pub fn mix_into(&self, out: &mut [f32], from: i64, gain: f32) {
-        let skip = (((self.start - from).max(0) * 2) as usize).min(out.len());
-        let mut out = &mut out[skip..];
-        let mut first = ((from - self.start).max(0) * 2) as usize;
-        let (a, b) = self.data.as_slices();
-        for part in [a, b] {
-            let src = part.get(first..).unwrap_or(&[]);
-            first = first.saturating_sub(part.len());
-            let n = src.len().min(out.len());
-            for (o, &s) in out[..n].iter_mut().zip(src) {
-                *o += s as f32 * gain;
+        let to = from + (out.len() / 2) as i64;
+        let first = self.blocks.partition_point(|(at, b)| at + b.frames() as i64 <= from);
+        let sound = self.blocks.range(first..).filter_map(|(at, b)| match b {
+            Block::Sound(s) => Some((*at, &s[..])),
+            Block::Silence(_) => None,
+        });
+        for (at, data) in sound.chain([(self.closed_end(), &self.tail[..])]) {
+            if at >= to {
+                break;
             }
-            out = &mut std::mem::take(&mut out)[n..];
+            let (a, b) = (at.max(from), (at + (data.len() / 2) as i64).min(to));
+            if a >= b {
+                continue;
+            }
+            let src = &data[((a - at) * 2) as usize..((b - at) * 2) as usize];
+            let dst = &mut out[((a - from) * 2) as usize..((b - from) * 2) as usize];
+            for (o, &x) in dst.iter_mut().zip(src) {
+                *o += x as f32 * gain;
+            }
         }
+    }
+
+    /// Frames guardados y el pico (para la prueba de micrófonos).
+    #[cfg(feature = "devtools")]
+    pub fn stats(&self) -> (i64, u16) {
+        let sound = self.blocks.iter().filter_map(|(_, b)| match b {
+            Block::Sound(s) => Some(&s[..]),
+            Block::Silence(_) => None,
+        });
+        let peak = sound.chain([&self.tail[..]]).flatten().map(|x| x.unsigned_abs()).max().unwrap_or(0);
+        (self.end() - self.start, peak)
     }
 }
