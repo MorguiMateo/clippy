@@ -33,6 +33,8 @@ pub struct Converter {
     input: ID3D11VideoProcessorInputView,
     pool: Vec<Slot>,
     next: usize,
+    /// La última conversión: de qué versión de la imagen (`Capture::version`) y en qué lugar del pool quedó.
+    last: Option<(u64, usize)>,
     /// Tamaño del video (para crear el cuadro negro).
     size: (u32, u32),
     /// Cuadro negro del modo "Solo juegos": se crea la primera vez que hace falta.
@@ -158,6 +160,7 @@ impl Converter {
                 input: input.unwrap(),
                 pool,
                 next: 0,
+                last: None,
                 size: (w, h),
                 black: None,
                 queue: VecDeque::new(),
@@ -207,8 +210,15 @@ impl Converter {
 
     /// Manda a convertir la imagen actual a una textura del pool, sin esperar a la GPU: `ready` la entrega cuando
     /// termina. Si la placa va atrasada (`IN_FLIGHT` sin terminar), ese cuadro se saltea.
-    pub fn convert(&mut self, pts: i64) -> Result<()> {
+    /// Si la imagen no cambió desde la última conversión (`version`), vuelve a mandar esa sin convertirla: el escritorio
+    /// quieto o un juego a menos cuadros por segundo que el video no ocupan a la placa en cada cuadro.
+    pub fn convert(&mut self, pts: i64, version: u64) -> Result<()> {
         if self.queue.len() >= IN_FLIGHT {
+            return Ok(());
+        }
+        // El pool avanza solo al convertir: esa imagen sigue intacta hasta que se convierta otra encima.
+        if let Some((_, i)) = self.last.filter(|&(v, _)| v == version) {
+            self.queue.push_back((Some(i), pts));
             return Ok(());
         }
         let i = self.next;
@@ -228,6 +238,7 @@ impl Converter {
             self.context.Flush();
         }
         self.queue.push_back((Some(i), pts));
+        self.last = Some((version, i));
         Ok(())
     }
 

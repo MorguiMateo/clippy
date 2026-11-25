@@ -354,14 +354,15 @@ impl Cursor {
     }
 
     /// Deja `frame` con el cursor dibujado si `show` y Windows lo muestra en este monitor; si no, sin cursor.
-    pub fn draw(&mut self, context: &ID3D11DeviceContext, frame: &Frame, show: bool) -> Result<()> {
+    /// Devuelve si tocó la imagen.
+    pub fn draw(&mut self, context: &ID3D11DeviceContext, frame: &Frame, show: bool) -> Result<bool> {
         let place = if show && self.visible { self.place(context, frame)? } else { None };
         let same = match &self.drawn {
             Some(d) => d.tex == frame.tex && Some(d.place) == place,
             None => place.is_none(),
         };
         if same {
-            return Ok(());
+            return Ok(false);
         }
         let target = match place {
             Some(_) => Some(self.target(&frame.tex)?),
@@ -401,7 +402,7 @@ impl Cursor {
                 l.Leave();
             }
         }
-        Ok(())
+        Ok(true)
     }
 
     /// Dónde va el cursor en `frame` (None si no hay forma o queda afuera). Prepara la forma si cambió.

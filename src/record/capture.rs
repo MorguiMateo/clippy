@@ -81,6 +81,9 @@ pub struct Capture {
     pub height: u32,
     /// Es una textura nueva cuando cambia el tamaño o la rotación de la imagen.
     pub latest: Option<Frame>,
+    /// Sube cada vez que cambia lo que hay en `latest` (imagen nueva o cursor): si no subió, convertirla de nuevo daría
+    /// lo mismo.
+    pub version: u64,
     adapter: IDXGIAdapter1,
     gpu: String,
     out: Output,
@@ -166,6 +169,7 @@ impl Capture {
                 width: out.width,
                 height: out.height,
                 latest: None,
+                version: 0,
                 adapter,
                 gpu: wide(&adesc.Description),
                 out,
@@ -331,9 +335,12 @@ impl Capture {
     /// sigue grabando sin cursor.
     pub fn draw_cursor(&mut self, show: bool) {
         let (Some(c), Some(f)) = (&mut self.cursor, &self.latest) else { return };
-        if let Err(e) = c.draw(&self.context, f, show) {
-            log(&format!("cursor del mouse: no se puede dibujar ({e})"));
-            self.cursor = None;
+        match c.draw(&self.context, f, show) {
+            Ok(changed) => self.version += changed as u64,
+            Err(e) => {
+                log(&format!("cursor del mouse: no se puede dibujar ({e})"));
+                self.cursor = None;
+            }
         }
     }
 
@@ -455,6 +462,7 @@ impl Capture {
             }
             if let Some(f) = &self.latest {
                 self.context.CopyResource(&f.tex, frame);
+                self.version += 1;
                 if let Some(c) = &mut self.cursor {
                     c.forget();
                 }

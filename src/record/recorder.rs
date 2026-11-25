@@ -436,7 +436,7 @@ fn session(
                 if visible {
                     // Con un juego, nunca: muchos dibujan su propio cursor y el de Windows queda quieto en el medio.
                     cap.draw_cursor(au.game.pid().is_none());
-                    cap.check(c.convert(pts))?;
+                    cap.check(c.convert(pts, cap.version))?;
                 } else {
                     cap.check(c.black(pts))?;
                 }
