@@ -468,47 +468,69 @@ fn trim_video(p: &mut VecDeque<Packet>, min_pts: i64) {
     }
 }
 
-/// Mezcla juego, micrófono y escritorio con sus volúmenes (el aviso de guardado se silencia en escritorio).
-/// Corre en el hilo de grabación al apretar la tecla: va por tramos cortos para no frenar la captura
-/// ni pedir otra copia del audio entero.
-fn mixed_audio(cfg: &Config, au: &AudioState, from: i64, to: i64) -> Vec<i16> {
-    const CHUNK: usize = 4096; // frames por tramo
-    let n = (to - from).max(0) as usize;
-    // Partes del canal escritorio donde no sonó el aviso de guardado (los avisos ya están en orden).
-    let frame = |t: i64| ((frames_at(t) - from).max(0) as usize).min(n);
-    let mut desktop = Vec::new();
-    let mut at = 0;
-    for (a, b) in au.masks.iter().map(|&(a, b)| (frame(a), frame(b))).chain([(n, n)]) {
-        if a > at {
-            desktop.push((at, a));
+/// El audio de un clip, para mezclarlo en el hilo que lo guarda (no en el de grabación, que se frenaría al apretar la
+/// tecla): cada canal prendido con su volumen. Los canales comparten los bloques del buffer, sin copiar el sonido.
+struct Mix {
+    from: i64,
+    to: i64,
+    game: Option<(AudioBuf, f32)>,
+    mic: Option<(AudioBuf, f32)>,
+    desktop: Option<(AudioBuf, f32)>,
+    /// Donde sonó el aviso de guardado: se silencia en escritorio.
+    masks: Vec<(i64, i64)>,
+}
+
+impl Mix {
+    fn new(cfg: &Config, au: &AudioState, from: i64, to: i64) -> Self {
+        let channel = |on: bool, c: &Channel, volume: u32| on.then(|| (c.buf.clone(), volume as f32 / 100.0));
+        Mix {
+            from,
+            to,
+            game: channel(cfg.game_audio, &au.game_ch, cfg.game_volume),
+            mic: channel(cfg.mic_audio, &au.mic, cfg.mic_volume),
+            desktop: channel(cfg.desktop_audio, &au.desktop, cfg.desktop_volume),
+            masks: au.masks.clone(),
         }
-        at = at.max(b);
     }
 
-    let mut out = Vec::with_capacity(n * 2);
-    let mut buf = [0f32; CHUNK * 2];
-    for c0 in (0..n).step_by(CHUNK) {
-        let c1 = (c0 + CHUNK).min(n);
-        let mix = &mut buf[..(c1 - c0) * 2];
-        mix.fill(0.0);
-        let f = from + c0 as i64;
-        if cfg.game_audio {
-            au.game_ch.buf.mix_into(mix, f, cfg.game_volume as f32 / 100.0);
+    /// Mezcla juego, micrófono y escritorio, por tramos cortos.
+    fn run(&self) -> Vec<i16> {
+        const CHUNK: usize = 4096; // frames por tramo
+        let from = self.from;
+        let n = (self.to - from).max(0) as usize;
+        // Partes del canal escritorio donde no sonó el aviso de guardado (los avisos ya están en orden).
+        let frame = |t: i64| ((frames_at(t) - from).max(0) as usize).min(n);
+        let mut desktop = Vec::new();
+        let mut at = 0;
+        for (a, b) in self.masks.iter().map(|&(a, b)| (frame(a), frame(b))).chain([(n, n)]) {
+            if a > at {
+                desktop.push((at, a));
+            }
+            at = at.max(b);
         }
-        if cfg.mic_audio {
-            au.mic.buf.mix_into(mix, f, cfg.mic_volume as f32 / 100.0);
-        }
-        if cfg.desktop_audio {
-            for &(a, b) in &desktop {
-                let (a, b) = (a.max(c0), b.min(c1));
-                if a < b {
-                    au.desktop.buf.mix_into(&mut mix[(a - c0) * 2..(b - c0) * 2], from + a as i64, cfg.desktop_volume as f32 / 100.0);
+
+        let mut out = Vec::with_capacity(n * 2);
+        let mut buf = [0f32; CHUNK * 2];
+        for c0 in (0..n).step_by(CHUNK) {
+            let c1 = (c0 + CHUNK).min(n);
+            let mix = &mut buf[..(c1 - c0) * 2];
+            mix.fill(0.0);
+            let f = from + c0 as i64;
+            for (b, gain) in [&self.game, &self.mic].into_iter().flatten() {
+                b.mix_into(mix, f, *gain);
+            }
+            if let Some((b, gain)) = &self.desktop {
+                for &(a, z) in &desktop {
+                    let (a, z) = (a.max(c0), z.min(c1));
+                    if a < z {
+                        b.mix_into(&mut mix[(a - c0) * 2..(z - c0) * 2], from + a as i64, *gain);
+                    }
                 }
             }
+            out.extend(mix.iter().map(|x| x.clamp(i16::MIN as f32, i16::MAX as f32) as i16));
         }
-        out.extend(mix.iter().map(|x| x.clamp(i16::MIN as f32, i16::MAX as f32) as i16));
+        out
     }
-    out
 }
 
 /// Arma el trabajo de guardado y lo lanza en otro hilo. Devuelve false si no había nada que guardar.
@@ -530,7 +552,7 @@ fn save_clip(cfg: &Config, packets: &VecDeque<Packet>, enc: &Encoder, au: &Audio
     log(&format!("clip: {} cuadros, {} fotogramas clave", pk.len(), pk.iter().filter(|p| p.key).count()));
     let base = pk[0].pts;
     let end = pk.last().map_or(base, |p| p.pts) + frame_dur;
-    let audio = cfg.audio_on().then(|| mixed_audio(cfg, au, frames_at(base), frames_at(end)));
+    let audio = cfg.audio_on().then(|| Mix::new(cfg, au, frames_at(base), frames_at(end)));
     if au.game.pid().is_none() {
         if cfg.game_audio {
             log("clip sin canal de juego: no se detectó ningún juego");
@@ -551,16 +573,18 @@ fn save_clip(cfg: &Config, packets: &VecDeque<Packet>, enc: &Encoder, au: &Audio
         path = dir.join(format!("Clippy_{stamp}_{i}.mp4"));
         i += 1;
     }
-    let job = mux::Job { path, video_type, packets: pk, base, frame_dur, audio };
     let notify = notify.clone();
-    std::thread::spawn(move || match mux::write(job) {
-        Ok(p) => {
-            log(&format!("clip guardado: {}", p.display()));
-            notify(Event::Saved(p));
-        }
-        Err(e) => {
-            log(&format!("no se pudo guardar el clip: {e:?}"));
-            notify(Event::SaveFailed(e.to_string()));
+    std::thread::spawn(move || {
+        let job = mux::Job { path, video_type, packets: pk, base, frame_dur, audio: audio.map(|m| m.run()) };
+        match mux::write(job) {
+            Ok(p) => {
+                log(&format!("clip guardado: {}", p.display()));
+                notify(Event::Saved(p));
+            }
+            Err(e) => {
+                log(&format!("no se pudo guardar el clip: {e:?}"));
+                notify(Event::SaveFailed(e.to_string()));
+            }
         }
     });
     true
