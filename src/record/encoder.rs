@@ -533,15 +533,34 @@ fn is_annex_b(d: &[u8]) -> bool {
     d.starts_with(&[0, 0, 1]) || d.starts_with(&[0, 0, 0, 1])
 }
 
-/// ¿Hay una imagen IDR (NAL 5)?
-fn is_keyframe(d: &[u8]) -> bool {
-    nals(d).iter().any(|n| nal_type(n) == 5)
+/// Dónde empieza el código de inicio del primer NAL con imagen (tipos 1 a 5) y su tipo. Los encabezados (SPS,
+/// PPS, SEI) van antes: se lee hasta ahí y no la imagen entera, que es casi todo el paquete.
+fn first_slice(d: &[u8]) -> Option<(usize, u8)> {
+    let mut i = 0;
+    while i + 3 < d.len() {
+        if d[i] == 0 && d[i + 1] == 0 && d[i + 2] == 1 {
+            let t = nal_type(&d[i + 3..]);
+            if (1..=5).contains(&t) {
+                return Some((i, t));
+            }
+            i += 3;
+        } else {
+            i += 1;
+        }
+    }
+    None
 }
 
-/// SPS (7) y PPS (8), para el encabezado del MP4.
+/// ¿Es una imagen IDR (NAL 5)?
+fn is_keyframe(d: &[u8]) -> bool {
+    first_slice(d).is_some_and(|(_, t)| t == 5)
+}
+
+/// SPS (7) y PPS (8), para el encabezado del MP4 (van antes de la imagen).
 fn param_sets(d: &[u8]) -> Vec<u8> {
+    let headers = &d[..first_slice(d).map_or(d.len(), |(i, _)| i)];
     let mut v = Vec::new();
-    for n in nals(d) {
+    for n in nals(headers) {
         if matches!(nal_type(n), 7 | 8) {
             v.extend_from_slice(&[0, 0, 0, 1]);
             v.extend_from_slice(n);

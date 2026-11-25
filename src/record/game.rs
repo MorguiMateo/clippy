@@ -56,6 +56,8 @@ pub struct Detector {
     game: Option<Proc>,
     /// El juego está adelante en pantalla completa ahora mismo.
     in_front: bool,
+    /// El juego se ve en su monitor (ver `visible`).
+    visible: bool,
     /// Último proceso en pantalla completa que resultó no ser juego (para no consultarlo de nuevo).
     not_game: u32,
     next_fs: i64,
@@ -67,6 +69,7 @@ impl Detector {
     /// Devuelve true si cambió el juego.
     pub fn poll(&mut self, now: i64) -> bool {
         let mut changed = false;
+        let checked = now >= self.next_alive || now >= self.next_fs;
         if now >= self.next_alive {
             self.next_alive = now + ALIVE_EVERY;
             if self.game.as_ref().is_some_and(|g| !alive(g)) {
@@ -92,6 +95,9 @@ impl Detector {
                     }
                 }
             }
+        }
+        if checked {
+            self.visible = self.sees();
         }
         changed
     }
@@ -123,8 +129,13 @@ impl Detector {
     }
 
     /// El juego se ve en su monitor: está adelante, o la ventana activa está en otro monitor
-    /// (con dos o más pantallas, mirar Discord en la otra no tapa el juego).
+    /// (con dos o más pantallas, mirar Discord en la otra no tapa el juego). Se averigua con cada revisión de
+    /// `poll` (cada 250 ms), no en cada cuadro.
     pub fn visible(&self) -> bool {
+        self.visible
+    }
+
+    fn sees(&self) -> bool {
         let Some(m) = self.monitor() else { return false };
         self.in_front || foreground().is_none_or(|h| unsafe { MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST) } != m)
     }
