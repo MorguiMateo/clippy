@@ -21,9 +21,50 @@ use crate::log::log;
 
 #[derive(Clone)]
 pub struct Packet {
-    pub data: Arc<[u8]>,
+    pub data: Bytes,
     pub pts: i64,
     pub key: bool,
+}
+
+/// Los bytes de un paquete de video. Recién salido del encoder es un bloque propio; cuando su GOP se cierra (llega el
+/// fotograma clave siguiente), `seal` junta todo el GOP en un solo bloque grande y cada paquete pasa a ser un tramo.
+/// Como el buffer se recorta de a GOPs enteros, cada bloque se suelta entero: la memoria vuelve a Windows en vez de
+/// quedar en el heap como miles de pedazos de 60 KB cuando el buffer se achica.
+#[derive(Clone)]
+pub struct Bytes {
+    block: Arc<Vec<u8>>,
+    start: usize,
+    end: usize,
+}
+
+impl Bytes {
+    fn own(data: Vec<u8>) -> Bytes {
+        let end = data.len();
+        Bytes { block: Arc::new(data), start: 0, end }
+    }
+
+    /// Junta los paquetes de un GOP cerrado en un solo bloque, sin cambiar sus bytes.
+    pub fn seal(gop: Vec<&mut Packet>) {
+        let mut block = Vec::with_capacity(gop.iter().map(|p| p.data.len()).sum());
+        let mut ranges = Vec::with_capacity(gop.len());
+        for p in &gop {
+            let start = block.len();
+            block.extend_from_slice(&p.data);
+            ranges.push((start, block.len()));
+        }
+        let block = Arc::new(block);
+        for (p, (start, end)) in gop.into_iter().zip(ranges) {
+            p.data = Bytes { block: block.clone(), start, end };
+        }
+    }
+}
+
+impl std::ops::Deref for Bytes {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        &self.block[self.start..self.end]
+    }
 }
 
 /// Con qué se codifica el video (lo muestra la ventana principal).
@@ -269,7 +310,7 @@ impl Encoder {
             let mut p = std::ptr::null_mut();
             let mut len = 0u32;
             mb.Lock(&mut p, None, Some(&mut len))?;
-            let data: Arc<[u8]> = std::slice::from_raw_parts(p, len as usize).into();
+            let data = Bytes::own(std::slice::from_raw_parts(p, len as usize).to_vec());
             mb.Unlock()?;
 
             // Un clip tiene que empezar en una imagen IDR: con otra imagen "limpia" (I sin IDR, que algunos

@@ -14,7 +14,7 @@ use super::audio::{self, Audio, AudioBuf, Source};
 use super::capture::{Aim, Capture, DeviceLost};
 use super::clock::{now_100ns, Timer};
 use super::convert::Converter;
-use super::encoder::{Device, Encoder, Packet};
+use super::encoder::{Bytes, Device, Encoder, Packet};
 use super::{game, mux};
 use crate::i18n::tr;
 use crate::config::{CaptureMode, Config};
@@ -414,7 +414,9 @@ fn session(
         au.mic.poll(t0);
 
         cap.check(enc.poll(&mut out))?;
+        let added = out.len();
         packets.extend(out.drain(..));
+        seal_gops(&mut packets, added);
         if !packets.is_empty() {
             *untested = None;
         }
@@ -484,6 +486,20 @@ fn session(
             (mb(video), packets.len(), mb(audio))
         });
         timer.sleep(next_frame - (now_100ns() - t0));
+    }
+}
+
+/// Junta en un bloque cada GOP que se cerró con uno de los últimos `added` paquetes (un fotograma clave nuevo cierra
+/// el GOP anterior). Ver `Bytes`.
+fn seal_gops(p: &mut VecDeque<Packet>, added: usize) {
+    let n = p.len();
+    for k in n - added..n {
+        if !p[k].key {
+            continue;
+        }
+        if let Some(j) = (0..k).rev().find(|&i| p[i].key) {
+            Bytes::seal(p.range_mut(j..k).collect());
+        }
     }
 }
 
