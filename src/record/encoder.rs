@@ -1,7 +1,7 @@
-//! Codificador H.264 de Media Foundation. Primero el de la placa de video (NVENC / AMF / QuickSync), que
-//! recibe texturas NV12 de la GPU directo, sin copias a la CPU. Si la placa no tiene (RX 6400, máquinas
-//! virtuales, controladores viejos), el de Windows por procesador: la conversión a NV12 sigue en la GPU
-//! y solo la imagen ya convertida pasa a la memoria.
+//! Codificador H.264 o H.265 de Media Foundation. Primero el de la placa de video (NVENC / AMF / QuickSync), que
+//! recibe texturas NV12 de la GPU directo, sin copias a la CPU. Si la placa no tiene H.265, H.264. Si no tiene
+//! ninguno (RX 6400, máquinas virtuales, controladores viejos), el H.264 de Windows por procesador: la conversión a
+//! NV12 sigue en la GPU y solo la imagen ya convertida pasa a la memoria.
 
 use std::mem::ManuallyDrop;
 use std::sync::Arc;
@@ -15,7 +15,7 @@ use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_NV12, DXGI_SAMPLE_DESC}
 use windows::Win32::Media::MediaFoundation::*;
 use windows::Win32::System::Com::{CoCreateInstance, CoTaskMemFree, CLSCTX_INPROC_SERVER};
 
-use crate::config::fit_short;
+use crate::config::{fit_short, Codec};
 use crate::i18n::tr;
 use crate::log::log;
 
@@ -61,6 +61,8 @@ pub struct Encoder {
     provides_samples: bool,
     out_size: u32,
     pub name: String,
+    /// Con qué formato codifica (H.265 si se pidió y la placa lo tiene).
+    pub codec: Codec,
     /// Tamaño y cuadros por segundo con que codifica (el de procesador puede usar menos que lo pedido).
     pub width: u32,
     pub height: u32,
@@ -76,22 +78,29 @@ enum Path {
 }
 
 impl Encoder {
-    /// Usa el encoder de la placa que captura; si no hay o no arranca, el de Windows por procesador.
-    pub fn new(device: &ID3D11Device, luid: LUID, w: u32, h: u32, fps: u32, bitrate: u32) -> Result<Self> {
+    /// Usa el encoder `codec` de la placa que captura (si no lo tiene, el H.264); si no hay o no arranca, el H.264
+    /// de Windows por procesador. `quality_mbps`: la calidad elegida (ver `Codec::bitrate`).
+    pub fn new(device: &ID3D11Device, luid: LUID, w: u32, h: u32, fps: u32, codec: Codec, quality_mbps: u32) -> Result<Self> {
         unsafe {
-            // Si ni se pueden buscar (máquinas virtuales, el adaptador básico de Windows), también va el procesador.
-            let gpu_encoders = gpu_encoders(luid).unwrap_or_else(|e| {
-                log(&format!("no se pudieron buscar encoders en la placa: {e}"));
-                Vec::new()
-            });
-            for (act, name, vendor) in gpu_encoders {
-                let gpu = act.ActivateObject::<IMFTransform>().map_err(Into::into).and_then(|mft| {
-                    let path = gpu_path(&mft, device, &name, vendor)?;
-                    Self::open(mft, path, name.clone(), w, h, fps, bitrate)
+            let codecs = if codec == Codec::Hevc { &[Codec::Hevc, Codec::H264][..] } else { &[Codec::H264] };
+            for &c in codecs {
+                // Si ni se pueden buscar (máquinas virtuales, el adaptador básico de Windows), también va el procesador.
+                let gpu_encoders = gpu_encoders(luid, c).unwrap_or_else(|e| {
+                    log(&format!("no se pudieron buscar encoders {} en la placa: {e}", c.label()));
+                    Vec::new()
                 });
-                match gpu {
-                    Ok(e) => return Ok(e),
-                    Err(e) => log(&format!("no se pudo usar {name}: {e}")),
+                for (act, name, vendor) in gpu_encoders {
+                    let gpu = act.ActivateObject::<IMFTransform>().map_err(Into::into).and_then(|mft| {
+                        let path = gpu_path(&mft, device, &name, vendor)?;
+                        Self::open(mft, path, name.clone(), c, w, h, fps, c.bitrate(quality_mbps))
+                    });
+                    match gpu {
+                        Ok(e) => return Ok(e),
+                        Err(e) => log(&format!("no se pudo usar {name}: {e}")),
+                    }
+                }
+                if c == Codec::Hevc {
+                    log("sin encoder H.265 en la placa: se graba en H.264");
                 }
             }
             log("sin encoder de video en la placa: se codifica con el procesador");
@@ -105,11 +114,13 @@ impl Encoder {
             })?;
             let (w, h) = fit_short((w, h), CPU_MAX_SHORT);
             let path = Path::Cpu(Readback::new(device, w, h)?);
-            Self::open(mft, path, "H.264 de Windows (procesador)".into(), w, h, fps.min(CPU_MAX_FPS), bitrate)
+            let bitrate = Codec::H264.bitrate(quality_mbps);
+            Self::open(mft, path, "H.264 de Windows (procesador)".into(), Codec::H264, w, h, fps.min(CPU_MAX_FPS), bitrate)
         }
     }
 
-    unsafe fn open(mft: IMFTransform, path: Path, name: String, w: u32, h: u32, fps: u32, bitrate: u32) -> Result<Self> {
+    #[allow(clippy::too_many_arguments)]
+    unsafe fn open(mft: IMFTransform, path: Path, name: String, codec: Codec, w: u32, h: u32, fps: u32, bitrate: u32) -> Result<Self> {
         let cpu = matches!(path, Path::Cpu(_));
         let api = mft.cast::<ICodecAPI>().ok();
         if let Some(api) = &api {
@@ -130,10 +141,14 @@ impl Encoder {
 
         let ot = MFCreateMediaType()?;
         ot.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)?;
-        ot.SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_H264)?;
+        ot.SetGUID(&MF_MT_SUBTYPE, &subtype(codec))?;
         ot.SetUINT32(&MF_MT_AVG_BITRATE, bitrate)?;
         set_video_common(&ot, w, h, fps)?;
-        ot.SetUINT32(&MF_MT_MPEG2_PROFILE, eAVEncH264VProfile_High.0 as u32)?;
+        let profile = match codec {
+            Codec::H264 => eAVEncH264VProfile_High.0 as u32,
+            Codec::Hevc => eAVEncH265VProfile_Main_420_8.0 as u32,
+        };
+        ot.SetUINT32(&MF_MT_MPEG2_PROFILE, profile)?;
         mft.SetOutputType(0, &ot, 0)?;
 
         let it = MFCreateMediaType()?;
@@ -165,6 +180,7 @@ impl Encoder {
             provides_samples: provides,
             out_size: info.cbSize.max(4 * 1024 * 1024),
             name,
+            codec,
             width: w,
             height: h,
             fps,
@@ -250,7 +266,7 @@ impl Encoder {
             // Un clip tiene que empezar en una imagen IDR: con otra imagen "limpia" (I sin IDR, que algunos
             // encoders marcan igual) los reproductores muestran negro o verde hasta el próximo IDR.
             // Si la salida no es Annex B no se puede mirar adentro y vale la marca del encoder.
-            let key = if is_annex_b(&data) { is_keyframe(&data) } else { clean };
+            let key = if is_annex_b(&data) { is_keyframe(&data, self.codec) } else { clean };
             if key {
                 self.last_key = pts;
             } else if pts - self.last_key > KEY_LATE && !self.warned_keys {
@@ -258,12 +274,12 @@ impl Encoder {
                 log(&format!("el encoder {} no genera fotogramas clave: los clips pueden salir negros o verdes", self.name));
             }
             if key {
-                let ps = Some(param_sets(&data)).filter(|ps| !ps.is_empty());
+                let ps = Some(param_sets(&data, self.codec)).filter(|ps| !ps.is_empty());
                 if self.seq_header.is_none() {
                     let published = self.published_header();
                     let hex = |h: &Option<Vec<u8>>| h.as_ref().map_or("no".into(), |h| h.iter().map(|b| format!("{b:02x}")).collect::<String>());
                     let same = if ps.is_some() && ps == published { " (iguales)" } else { "" };
-                    log(&format!("encabezado H.264{same}: en el video {}, publicado por el encoder {}", hex(&ps), hex(&published)));
+                    log(&format!("encabezado {}{same}: en el video {}, publicado por el encoder {}", self.codec.label(), hex(&ps), hex(&published)));
                 }
                 if ps.is_some() {
                     self.seq_header = ps;
@@ -376,12 +392,19 @@ unsafe fn gpu_path(mft: &IMFTransform, device: &ID3D11Device, name: &str, vendor
     Ok(Path::Gpu { events: mft.cast()?, _mgr: mgr, vendor })
 }
 
-/// Encoders H.264 de la placa que captura (importa en notebooks con dos GPUs), con nombre y fabricante.
-unsafe fn gpu_encoders(luid: LUID) -> Result<Vec<(IMFActivate, String, Option<String>)>> {
+fn subtype(codec: Codec) -> GUID {
+    match codec {
+        Codec::H264 => MFVideoFormat_H264,
+        Codec::Hevc => MFVideoFormat_HEVC,
+    }
+}
+
+/// Encoders `codec` de la placa que captura (importa en notebooks con dos GPUs), con nombre y fabricante.
+unsafe fn gpu_encoders(luid: LUID, codec: Codec) -> Result<Vec<(IMFActivate, String, Option<String>)>> {
     // Prueba: en una placa que no existe la búsqueda falla, y se tiene que seguir con el procesador.
     let luid = if skip_gpu() { LUID { LowPart: u32::MAX, HighPart: i32::MAX } } else { luid };
     let input = MFT_REGISTER_TYPE_INFO { guidMajorType: MFMediaType_Video, guidSubtype: MFVideoFormat_NV12 };
-    let output = MFT_REGISTER_TYPE_INFO { guidMajorType: MFMediaType_Video, guidSubtype: MFVideoFormat_H264 };
+    let output = MFT_REGISTER_TYPE_INFO { guidMajorType: MFMediaType_Video, guidSubtype: subtype(codec) };
     let mut attrs = None;
     MFCreateAttributes(&mut attrs, 1)?;
     let attrs = attrs.unwrap();
@@ -524,8 +547,20 @@ fn nals(d: &[u8]) -> Vec<&[u8]> {
     out
 }
 
-fn nal_type(n: &[u8]) -> u8 {
-    n[0] & 0x1f
+/// Tipo de NAL: en H.264, los 5 bits bajos del primer byte; en H.265, los 6 del medio.
+fn nal_type(n: &[u8], codec: Codec) -> u8 {
+    match codec {
+        Codec::H264 => n[0] & 0x1f,
+        Codec::Hevc => (n[0] >> 1) & 0x3f,
+    }
+}
+
+/// NAL con imagen: H.264 1 a 5, H.265 0 a 31.
+fn is_slice(t: u8, codec: Codec) -> bool {
+    match codec {
+        Codec::H264 => (1..=5).contains(&t),
+        Codec::Hevc => t <= 31,
+    }
 }
 
 /// ¿Empieza con un código de inicio (00 00 01 o 00 00 00 01)?
@@ -533,14 +568,14 @@ fn is_annex_b(d: &[u8]) -> bool {
     d.starts_with(&[0, 0, 1]) || d.starts_with(&[0, 0, 0, 1])
 }
 
-/// Dónde empieza el código de inicio del primer NAL con imagen (tipos 1 a 5) y su tipo. Los encabezados (SPS,
-/// PPS, SEI) van antes: se lee hasta ahí y no la imagen entera, que es casi todo el paquete.
-fn first_slice(d: &[u8]) -> Option<(usize, u8)> {
+/// Dónde empieza el código de inicio del primer NAL con imagen y su tipo. Los encabezados (SPS, PPS, SEI) van
+/// antes: se lee hasta ahí y no la imagen entera, que es casi todo el paquete.
+fn first_slice(d: &[u8], codec: Codec) -> Option<(usize, u8)> {
     let mut i = 0;
     while i + 3 < d.len() {
         if d[i] == 0 && d[i + 1] == 0 && d[i + 2] == 1 {
-            let t = nal_type(&d[i + 3..]);
-            if (1..=5).contains(&t) {
+            let t = nal_type(&d[i + 3..], codec);
+            if is_slice(t, codec) {
                 return Some((i, t));
             }
             i += 3;
@@ -551,17 +586,27 @@ fn first_slice(d: &[u8]) -> Option<(usize, u8)> {
     None
 }
 
-/// ¿Es una imagen IDR (NAL 5)?
-fn is_keyframe(d: &[u8]) -> bool {
-    first_slice(d).is_some_and(|(_, t)| t == 5)
+/// ¿Se puede empezar el clip acá? H.264: imagen IDR (5). H.265: IDR, CRA o BLA (16 a 21); sin imágenes B, las
+/// tres arrancan limpias.
+fn is_keyframe(d: &[u8], codec: Codec) -> bool {
+    first_slice(d, codec).is_some_and(|(_, t)| match codec {
+        Codec::H264 => t == 5,
+        Codec::Hevc => (16..=21).contains(&t),
+    })
 }
 
-/// SPS (7) y PPS (8), para el encabezado del MP4 (van antes de la imagen).
-fn param_sets(d: &[u8]) -> Vec<u8> {
-    let headers = &d[..first_slice(d).map_or(d.len(), |(i, _)| i)];
+/// Encabezados del video para el MP4 (van antes de la imagen): H.264 SPS y PPS (7, 8); H.265 VPS, SPS y PPS
+/// (32 a 34).
+fn param_sets(d: &[u8], codec: Codec) -> Vec<u8> {
+    let headers = &d[..first_slice(d, codec).map_or(d.len(), |(i, _)| i)];
     let mut v = Vec::new();
     for n in nals(headers) {
-        if matches!(nal_type(n), 7 | 8) {
+        let t = nal_type(n, codec);
+        let param = match codec {
+            Codec::H264 => matches!(t, 7 | 8),
+            Codec::Hevc => (32..=34).contains(&t),
+        };
+        if param {
             v.extend_from_slice(&[0, 0, 0, 1]);
             v.extend_from_slice(n);
         }

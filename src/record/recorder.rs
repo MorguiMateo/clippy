@@ -280,7 +280,7 @@ fn session(
         size = align16(size);
     }
     // Si ni se pudo configurar (no hay encoder, otra placa), no es por el tamaño: se avisa como siempre.
-    let mut enc = Encoder::new(&cap.device, cap.luid, size.0, size.1, cfg.fps.max(1), cfg.bitrate_mbps * 1_000_000)?;
+    let mut enc = Encoder::new(&cap.device, cap.luid, size.0, size.1, cfg.fps.max(1), cfg.codec, cfg.bitrate_mbps)?;
     // El encoder por procesador puede pedir menos que lo elegido.
     let (w, h, fps) = (enc.width, enc.height, enc.fps);
     let frame_dur = 10_000_000i64 / fps as i64;
@@ -290,9 +290,10 @@ fn session(
     #[cfg(feature = "devtools")]
     let reject = std::env::var_os("CLIPPY_TEST_ALIGN16").is_some() && align16((w, h)) != (w, h);
     log(&format!(
-        "grabando {} a {w}x{h} @ {fps} fps, H.264 {} Mbps, buffer {} s (máximo en esta PC: {} s), encoder: {}",
+        "grabando {} a {w}x{h} @ {fps} fps, {} {} Mbps, buffer {} s (máximo en esta PC: {} s), encoder: {}",
         cap.describe(),
-        cfg.bitrate_mbps,
+        enc.codec.label(),
+        enc.codec.bitrate(cfg.bitrate_mbps) / 1_000_000,
         cfg.seconds,
         cfg.max_seconds(),
         enc.name

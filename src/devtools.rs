@@ -95,6 +95,7 @@ fn test_mode(args: &[String]) -> i32 {
         Some("mic") => (cfg.game_audio, cfg.desktop_audio, cfg.mic_audio) = (false, false, true),
         Some("juegos") => cfg.capture_mode = crate::config::CaptureMode::GamesOnly,
         Some("cursor") => cfg.cursor = true,
+        Some("hevc") => cfg.codec = crate::config::Codec::Hevc,
         // Un número: la resolución del clip (lado corto en px).
         Some(r) if r.parse::<u32>().is_ok() => cfg.resolution = r.parse().unwrap(),
         _ => {}
