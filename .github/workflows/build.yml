@@ -74,6 +74,18 @@ jobs:
           name: Clippy.exe
           path: Clippy.exe
 
+      # El exe con los modos de prueba (--test-soak para medir el rendimiento): solo como artefacto, nunca en el release.
+      - name: Compilar con devtools
+        shell: bash
+        run: |
+          cargo build --profile fast --locked --features devtools
+          cp target/fast/clippy.exe Clippy-devtools.exe
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Clippy-devtools.exe
+          path: Clippy-devtools.exe
+
       - name: Publicar el release
         if: inputs.publish && inputs.tag != ''
         shell: bash

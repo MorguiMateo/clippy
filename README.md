@@ -40,20 +40,127 @@ Solo con `--features devtools`:
 | --- | --- |
 | `--test <seg> <carpeta> [game\|desktop\|mic\|juegos\|cursor\|hevc\|720\|1080\|1440]` | Graba, guarda un clip y sale (imprime el encoder y el juego detectado; `cursor` dibuja el cursor del mouse; `hevc` graba en H.265; un número elige la resolución del clip). Con la variable `CLIPPY_CPU_ENCODER=1`, codifica con el procesador como en una placa sin encoder; con `CLIPPY_TEST_LOST=<seg>`, a esos segundos se pierde la placa una vez, como en un reinicio del driver; con `CLIPPY_TEST_STALL=<seg>`, la captura se traba pasado ese tiempo. |
 | `--test-fullscreen <ancho>x<alto> <seg> [alttab]` | Un juego de mentira en pantalla completa exclusiva (cambia el modo de video, como una resolución estirada); con `alttab`, sale y vuelve cada 6 s. Corré una copia del exe con otro nombre para que cuente como juego. |
-| `--test-soak <minutos> <carpeta> [escenario\|-] [segundos entre clips]` | Graba un rato largo midiéndose a sí misma (procesador, RAM, memoria de video, placa, handles, hilos, cuadros perdidos, tiempos al guardar), guarda un clip cada tanto (60 s) y deja en la carpeta `perf.jsonl`, `informe.json` e `informe.md` con el veredicto y las fugas. Los escenarios son los de `--test`. Claude lo usa con la skill `rendimiento` (`.claude/skills/rendimiento`). |
+| `--test-soak <minutos> <carpeta> [escenario\|-] [segundos entre clips]` | Graba un rato largo midiéndose a sí misma y deja un informe de rendimiento y fugas (ver [Medir el rendimiento](#medir-el-rendimiento)). |
 | `--test-mic` | Cuánto audio entrega cada micrófono en 3 s. |
 | `--test-download` | Descarga la versión publicada como el botón "Actualizar". |
 | `--test-export`, `--test-frame`, `--test-strip` | Pruebas del editor (ver `src/editor/devtools.rs`). |
 | `--settings` o `--editor` con `CLIPPY_TEST_WINDOW=<ancho>x<alto>` | La ventana se abre de ese tamaño y sin maximizar, para ver cómo queda angosta (`760x560` es la de ajustes más chica). |
 
-Para medir cuánto procesador, RAM y placa usa la grabadora al guardar clips (con cualquier versión del exe, para
-comparar), con Clippy grabando:
+## Medir el rendimiento
+
+Hay dos formas de medir. Las dos son solo para Windows.
+
+- **`--test-soak`**: la grabadora se mide a sí misma mientras graba y busca fugas. Es la completa, pero solo existe en el
+  exe con `devtools`.
+- **`tools\medir.ps1`**: mide desde afuera al Clippy que ya tenés abierto. Sirve con cualquier versión, también con las
+  anteriores a `--test-soak`, para comparar.
+
+### Con Claude Code (lo más simple)
+
+Abrí Claude Code en la PC con Windows, en este repo, y pedile algo como:
+
+> medí el rendimiento 15 minutos con un juego y buscá fugas
+
+> compará el rendimiento contra la 0.4.5
+
+Claude usa la skill `rendimiento` (`.claude/skills/rendimiento/SKILL.md`): compila, corre la prueba aislada y la vigila en
+vivo. Cada minuto ve una línea `ESTADO` y, en cuanto algo se sale de lo normal, una línea `AVISO`. Al final lee el informe
+y te dice qué anda mal y en qué archivo mejorarlo.
+
+Otros pedidos que entiende:
+
+> medí 10 minutos el escritorio con el encoder por procesador
+
+> grabá 30 minutos en "Solo juegos" y fijate si pierde memoria
+
+> medí si este cambio mejoró el procesador comparado con main
+
+Lo que necesita la PC:
+- [Rust](https://rustup.rs) con las herramientas de compilación de Visual Studio (el instalador de rustup las ofrece).
+- [Git para Windows](https://git-scm.com/download/win), que trae Git Bash.
+- Claude Code.
+
+La primera compilación tarda un par de minutos.
+
+### A mano, con `--test-soak`
+
+1. **Conseguí el exe con `devtools`**. Hay dos formas:
+   - Compilarlo en este repo: `cargo build --profile fast --features devtools`. Queda en `target/fast/clippy.exe`.
+   - Bajarlo sin compilar: en GitHub → Actions → **Build** → la última corrida de *Run workflow* → artefacto
+     `Clippy-devtools.exe`. No es el exe publicado: no lo uses para jugar.
+2. **Cerrá tu Clippy** (clic derecho en la bandeja → Salir) y lo que use mucho procesador o placa: si no, los números se
+   mezclan.
+3. **Corré la prueba en Git Bash**, cada una en una carpeta nueva y con su propio `APPDATA` (así usa los ajustes de
+   fábrica y no toca los tuyos):
+
+   ```bash
+   D="$TEMP/clippy-perf/prueba1"; mkdir -p "$D/datos"
+   APPDATA="$D/datos" target/fast/clippy.exe --test-soak 10 "$D" desktop 60 > "$D/consola.txt" 2>&1
+   ```
+
+   Los argumentos son `<minutos> <carpeta> [escenario|-] [segundos entre clips]`:
+   - **Minutos**: para buscar fugas, 10 o más. Para comparar consumo alcanza con 3.
+   - **Escenario**:
+     - `desktop`: el escritorio y el audio del sistema.
+     - `game`: el canal del juego.
+     - `mic`: el micrófono.
+     - `juegos`: el modo "Solo juegos".
+     - `cursor`: el cursor dibujado.
+     - `hevc`: H.265.
+     - `720`, `1080` o `1440`: la resolución del clip.
+     - `-`: el de fábrica.
+   - **Segundos entre clips**: cada cuánto guarda uno (60 si no se dice).
+   - **Encoder por procesador**: poné `CLIPPY_CPU_ENCODER=1` antes del comando, como el `APPDATA`.
+   - **Con un juego**: corré a la par el juego de mentira desde una copia del exe con otro nombre. Cambia la resolución
+     del monitor mientras dura.
+
+     ```bash
+     cp target/fast/clippy.exe "$D/juego.exe"
+     "$D/juego.exe" --test-fullscreen 1920x1080 660 &
+     ```
+
+4. **Seguila mientras graba**: en otra ventana de Git Bash, `tail -f "$D/consola.txt"`. Cada minuto sale una línea
+   `ESTADO` y, si algo se sale de lo normal, una línea `AVISO`:
+   - el encoder recibe menos cuadros de los pedidos;
+   - se saltean cuadros;
+   - una vuelta del hilo de grabación tarda más que un cuadro;
+   - la RAM salta sin guardar un clip.
+5. **Leé el resultado** en la carpeta:
+   - `informe.md`: el veredicto (`OK` o `REVISAR`) y los avisos, más el consumo grabando y al guardar (procesador, placa
+     por motor, RAM, memoria de video), los cuadros por segundo reales, cuánto se frena la grabación al guardar y la
+     tabla de fugas.
+   - `informe.json`: lo mismo, para comparar corridas.
+   - `perf.jsonl`: una muestra por segundo.
+
+   El exe sale con 0 si está todo bien, con 3 si hay algo para revisar y con 1 si no pudo medir.
+
+**Cómo se buscan las fugas**:
+- Desde que se llena el buffer, se toma el valor más bajo de cada tramo de 30 s (así no cuentan los picos de guardar un
+  clip). Si eso sigue subiendo, el informe lo marca como "posible fuga".
+- Se revisan la RAM privada, la RAM fuera de los buffers de video y audio, la memoria de video, los handles, los hilos y
+  los objetos de Windows.
+- Si sube la RAM privada pero no la de fuera de los buffers, no es una fuga: es el buffer, que pesa más cuando el video se
+  mueve más.
+- Al final se ve si quedaron hilos o handles sin soltar al cerrar la grabadora.
+
+Medir cuesta alrededor de 1 % de un núcleo, sobre todo por los contadores de la placa. El informe dice cuánto fue y ya lo
+descuenta.
+
+### Desde afuera, con `tools\medir.ps1`
+
+Con Clippy abierto y grabando, en la situación que quieras medir:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File tools\medir.ps1 -Nombre 0.4.6
 ```
 
-Deja en el Escritorio, en `clippy-medicion\`, un CSV por corrida (una fila por segundo) y `resumen.csv` (una fila por corrida).
+Aprieta sola tu tecla de guardar clip (guarda clips de verdad) y mide procesador, RAM, memoria de video y uso de la placa
+antes, durante y después de cada uno. Deja en el Escritorio, en `clippy-medicion\`, un CSV por corrida (una fila por
+segundo) y `resumen.csv` (una fila por corrida). Para comparar versiones, corré lo mismo con cada exe y mirá
+`resumen.csv`. Opciones:
+- `-Clips 5`: cuántos clips guarda.
+- `-Antes 30`: segundos de grabación normal antes de cada uno.
+- `-Despues 5`: segundos que sigue midiendo después de cada uno.
 
 ## Mapa del código
 
