@@ -408,24 +408,27 @@ fn session(
             let pts = (now / frame_dur) * frame_dur;
             let visible = cfg.capture_mode == CaptureMode::Screen || au.game.visible();
             if let Some(c) = conv.as_mut() {
-                // Solo convertir si el encoder pidió otra imagen; si está ocupado se salta un cuadro.
-                if enc.pending_input > 0 {
-                    let tex = if visible {
-                        // Con un juego, nunca: muchos dibujan su propio cursor y el de Windows queda quieto en el medio.
-                        cap.draw_cursor(au.game.pid().is_none());
-                        cap.check(c.convert())?
-                    } else {
-                        c.black()
-                    };
-                    if visible && probe_at.is_some_and(|t| now >= t) {
+                // Al encoder, en orden, los cuadros que la GPU ya terminó de convertir (sin esperarla: con el juego al
+                // 100 % la conversión queda en la cola detrás de sus cuadros). Si el encoder está ocupado, esperan.
+                while enc.pending_input > 0 {
+                    let Some(r) = cap.check(c.ready())? else { break };
+                    if r.converted && probe_at.is_some_and(|t| now >= t) {
                         probe_at = None;
-                        log(&c.probe(&tex));
+                        log(&c.probe(&r.tex));
                     }
                     #[cfg(feature = "devtools")]
                     if reject {
                         anyhow::bail!("encoder de prueba: {w}x{h} no es múltiplo de 16 (0x80004005)");
                     }
-                    cap.check(enc.feed(&tex, pts, frame_dur))?;
+                    cap.check(enc.feed(&r.tex, r.pts, frame_dur))?;
+                    c.pop();
+                }
+                if visible {
+                    // Con un juego, nunca: muchos dibujan su propio cursor y el de Windows queda quieto en el medio.
+                    cap.draw_cursor(au.game.pid().is_none());
+                    cap.check(c.convert(pts))?;
+                } else {
+                    c.black(pts);
                 }
             }
             next_frame = pts + frame_dur;
