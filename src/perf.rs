@@ -10,6 +10,7 @@
 //!
 //! Sale con 0 si todo está bien, 3 si hay algo para revisar y 1 si no pudo medir.
 
+use std::collections::{HashMap, VecDeque};
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -56,6 +57,12 @@ pub struct Rec {
     pub video_mb: f64,
     pub packets: usize,
     pub audio_mb: f64,
+    /// Bytes que sacó el encoder en el segundo, tamaño del cuadro más grande (y si fue fotograma clave),
+    /// y tiempo máximo (ms) entre mandar un cuadro al encoder y recibir su paquete.
+    pub enc_bytes: usize,
+    pub enc_max_frame_bytes: usize,
+    pub enc_max_frame_key: bool,
+    pub enc_lat_max_ms: f64,
 }
 
 /// Un clip guardado: cuánto se frenó la grabación, cuánto tardó la mezcla del audio y cuánto la escritura del MP4 (ms).
@@ -86,11 +93,37 @@ pub struct Loop {
     turns: u32,
     busy_sum: i64,
     busy_max: i64,
+    /// (pts, instante en 100 ns) de cada cuadro entregado al encoder que todavía no devolvió paquete.
+    fed_at: VecDeque<(i64, i64)>,
+    enc_bytes: usize,
+    enc_max_frame_bytes: usize,
+    enc_max_frame_key: bool,
+    enc_lat_max: i64,
 }
 
 impl Loop {
-    pub fn fed(&mut self) {
+    pub fn fed(&mut self, pts: i64, now: i64) {
         self.fed += 1;
+        if self.fed_at.len() >= 128 {
+            self.fed_at.pop_front();
+        }
+        self.fed_at.push_back((pts, now));
+    }
+
+    /// Un paquete que devolvió el encoder en `now` (100 ns).
+    pub fn encoded(&mut self, pts: i64, bytes: usize, key: bool, now: i64) {
+        self.enc_bytes += bytes;
+        if bytes > self.enc_max_frame_bytes {
+            self.enc_max_frame_bytes = bytes;
+            self.enc_max_frame_key = key;
+        }
+        while self.fed_at.front().is_some_and(|&(p, _)| p < pts) {
+            self.fed_at.pop_front();
+        }
+        if self.fed_at.front().is_some_and(|&(p, _)| p == pts) {
+            let (_, at) = self.fed_at.pop_front().unwrap();
+            self.enc_lat_max = self.enc_lat_max.max(now - at);
+        }
     }
 
     pub fn missed(&mut self, frames: i64) {
@@ -132,8 +165,13 @@ impl Loop {
             video_mb,
             packets,
             audio_mb,
+            enc_bytes: self.enc_bytes,
+            enc_max_frame_bytes: self.enc_max_frame_bytes,
+            enc_max_frame_key: self.enc_max_frame_key,
+            enc_lat_max_ms: ms(self.enc_lat_max),
         });
-        *self = Loop { since: now, ..Default::default() };
+        let fed_at = std::mem::take(&mut self.fed_at);
+        *self = Loop { since: now, fed_at, ..Default::default() };
     }
 }
 
@@ -161,6 +199,9 @@ struct Sample {
     gpu_encoder: f64,
     gpu_conversion: f64,
     gpu_otros: f64,
+    /// Uso total de la placa de todos los procesos (%): motor 3D y encoder.
+    gpu_total_3d: f64,
+    gpu_total_encoder: f64,
     /// Se estaba guardando un clip.
     guardando: bool,
     rec: Option<Rec>,
@@ -261,7 +302,7 @@ impl Meter {
                 .sum();
             (GetGuiResources(p, GR_GDIOBJECTS), GetGuiResources(p, GR_USEROBJECTS), vram)
         };
-        let g = self.gpu.as_mut().map(|g| g.read(self.pid)).unwrap_or_default();
+        let (g, gpu_total_3d, gpu_total_encoder) = self.gpu.as_mut().map(|g| g.read(self.pid)).unwrap_or_default();
         let mb = |b: u64| b as f64 / 1_048_576.0;
         Sample {
             t,
@@ -280,6 +321,8 @@ impl Meter {
             gpu_encoder: g[2],
             gpu_conversion: g[3],
             gpu_otros: g[4],
+            gpu_total_3d,
+            gpu_total_encoder,
             guardando,
             rec: REC.lock().unwrap().clone(),
         }
@@ -311,21 +354,23 @@ impl Gpu {
         }
     }
 
-    /// 3D, copia, encoder, conversión y otros (%) de los motores del proceso `pid`.
-    fn read(&mut self, pid: u32) -> [f64; 5] {
-        let mut out = [0.0; 5];
+    /// (3D, copia, encoder, conversión y otros de `pid`; total 3D de todos los procesos; total encoder de todos).
+    fn read(&mut self, pid: u32) -> ([f64; 5], f64, f64) {
+        let mut own = [0.0; 5];
+        let mut total_3d: HashMap<String, f64> = HashMap::new();
+        let mut total_enc: HashMap<String, f64> = HashMap::new();
         unsafe {
             if PdhCollectQueryData(self.query) != 0 {
-                return out;
+                return (own, 0.0, 0.0);
             }
             let (mut size, mut count) = (0u32, 0u32);
             if PdhGetFormattedCounterArrayW(self.counter, PDH_FMT_DOUBLE, &mut size, &mut count, None) != PDH_MORE_DATA {
-                return out;
+                return (own, 0.0, 0.0);
             }
             self.buf.resize((size as usize).div_ceil(8), 0);
             let items = self.buf.as_mut_ptr() as *mut PDH_FMT_COUNTERVALUE_ITEM_W;
             if PdhGetFormattedCounterArrayW(self.counter, PDH_FMT_DOUBLE, &mut size, &mut count, Some(items)) != 0 {
-                return out;
+                return (own, 0.0, 0.0);
             }
             let prefix = format!("pid_{pid}_");
             for it in std::slice::from_raw_parts(items, count as usize) {
@@ -333,10 +378,11 @@ impl Gpu {
                 if it.FmtValue.CStatus > 1 {
                     continue;
                 }
-                let name = it.szName.to_string().unwrap_or_default();
-                if !name.starts_with(&prefix) {
+                let val = it.FmtValue.Anonymous.doubleValue;
+                if !val.is_finite() || val < 0.0 {
                     continue;
                 }
+                let name = it.szName.to_string().unwrap_or_default();
                 let kind = match name.rsplit("engtype_").next().unwrap_or("") {
                     "3D" => 0,
                     "Copy" => 1,
@@ -344,10 +390,19 @@ impl Gpu {
                     "VideoProcessing" => 3,
                     _ => 4,
                 };
-                out[kind] += it.FmtValue.Anonymous.doubleValue;
+                if name.starts_with(&prefix) {
+                    own[kind] += val;
+                }
+                // Todos los procesos que comparten el mismo motor físico tienen el mismo sufijo `_luid_...`.
+                if kind == 0 || kind == 2 {
+                    let eng = name.find("_luid_").map_or(name.as_str(), |i| &name[i..]);
+                    let map = if kind == 0 { &mut total_3d } else { &mut total_enc };
+                    *map.entry(eng.to_string()).or_insert(0.0) += val;
+                }
             }
         }
-        out
+        let peak = |m: HashMap<String, f64>| m.into_values().fold(0.0f64, f64::max).min(100.0);
+        (own, peak(total_3d), peak(total_enc))
     }
 }
 
@@ -585,6 +640,14 @@ struct Tirones {
     causa: &'static str,
     /// Cuándo (segundos desde el arranque).
     cuando: Vec<u32>,
+    /// Qué pasaba en la placa (todos los procesos) y en el encoder durante esos segundos.
+    gpu_total_3d_pct: Stat,
+    gpu_total_encoder_pct: Stat,
+    enc_mbps: Stat,
+    enc_cuadro_max_kb: Stat,
+    /// En cuántos de los segundos con tirones el cuadro más grande fue un fotograma clave.
+    cuadro_max_clave: u32,
+    enc_latencia_max_ms: Stat,
 }
 
 /// Un recurso que se revisa por fugas.
@@ -614,12 +677,15 @@ struct Report {
     cpu_muestreo_pct: f64,
     gpu_pct: Stat,
     gpu_por_motor_prom: [(&'static str, f64); 4],
+    gpu_total_3d_pct: Stat,
+    gpu_total_encoder_pct: Stat,
     ram_privada_mb: Stat,
     vram_mb: Stat,
     fps_real: Stat,
     cuadros_perdidos: u32,
     /// Segundos con menos del 90 % de los cuadros al encoder, y qué pasó en esos segundos.
     tirones: Tirones,
+    enc_latencia_max_ms: Stat,
     trabajo_por_cuadro_ms: Stat,
     presupuesto_por_cuadro_ms: f64,
     guardado_frenada_ms: Stat,
@@ -730,10 +796,10 @@ fn analyze(i: &Input, samples: &[Sample]) -> Report {
     }
 
     let fps_real = stat(recs.iter().map(|r| r.fed as f64));
-    let dips: Vec<(f64, &Rec)> = samples
+    let dips: Vec<(&Sample, &Rec)> = samples
         .iter()
         .filter(|s| s.t >= 3.0)
-        .filter_map(|s| s.rec.as_ref().map(|r| (s.t, r)))
+        .filter_map(|s| s.rec.as_ref().map(|r| (s, r)))
         .filter(|(_, r)| (r.fed as f64) < r.fps as f64 * 0.9)
         .collect();
     let sum = |f: fn(&Rec) -> u32| dips.iter().map(|(_, r)| f(r)).sum::<u32>();
@@ -758,7 +824,13 @@ fn analyze(i: &Input, samples: &[Sample]) -> Report {
         encoder_sin_pedir: busy_enc,
         descartados_fila_llena: dropped,
         causa,
-        cuando: dips.iter().map(|(t, _)| t.round() as u32).collect(),
+        cuando: dips.iter().map(|(s, _)| s.t.round() as u32).collect(),
+        gpu_total_3d_pct: stat(dips.iter().map(|(s, _)| s.gpu_total_3d)),
+        gpu_total_encoder_pct: stat(dips.iter().map(|(s, _)| s.gpu_total_encoder)),
+        enc_mbps: stat(dips.iter().map(|(_, r)| r.enc_bytes as f64 * 8.0 / 1_000_000.0)),
+        enc_cuadro_max_kb: stat(dips.iter().map(|(_, r)| r.enc_max_frame_bytes as f64 / 1024.0)),
+        cuadro_max_clave: dips.iter().filter(|(_, r)| r.enc_max_frame_key).count() as u32,
+        enc_latencia_max_ms: stat(dips.iter().map(|(_, r)| r.enc_lat_max_ms)),
     };
     let missed: u32 = recs.iter().map(|r| r.missed).sum();
     let busy = stat(recs.iter().map(|r| r.busy_max_ms));
@@ -818,11 +890,14 @@ fn analyze(i: &Input, samples: &[Sample]) -> Report {
             ("encoder", motor(|s| s.gpu_encoder)),
             ("conversion", motor(|s| s.gpu_conversion)),
         ],
+        gpu_total_3d_pct: stat(steady.iter().map(|s| s.gpu_total_3d)),
+        gpu_total_encoder_pct: stat(steady.iter().map(|s| s.gpu_total_encoder)),
         ram_privada_mb: stat(steady.iter().map(|s| s.privada_mb)),
         vram_mb: stat(steady.iter().map(|s| s.vram_mb)),
         fps_real,
         cuadros_perdidos: missed,
         tirones,
+        enc_latencia_max_ms: stat(recs.iter().map(|r| r.enc_lat_max_ms)),
         trabajo_por_cuadro_ms: busy,
         presupuesto_por_cuadro_ms: (budget * 100.0).round() / 100.0,
         guardado_frenada_ms: held,
@@ -856,6 +931,11 @@ impl Report {
         m += &format!("- Placa (motor más ocupado): {} %\n", st(&self.gpu_pct));
         let motores: Vec<String> = self.gpu_por_motor_prom.iter().map(|(k, v)| format!("{k} {v} %")).collect();
         m += &format!("- Placa por motor (promedio): {}\n", motores.join(", "));
+        m += &format!(
+            "- Placa total (todos los procesos): 3D {} % · encoder {} %\n",
+            st(&self.gpu_total_3d_pct),
+            st(&self.gpu_total_encoder_pct)
+        );
         m += &format!("- RAM privada: {} MB\n", st(&self.ram_privada_mb));
         m += &format!("- Memoria de video: {} MB\n", st(&self.vram_mb));
         m += &format!("- Esta medición usó {:.2} % del procesador (ya descontado arriba)\n", self.cpu_muestreo_pct);
@@ -867,6 +947,19 @@ impl Report {
             "- Segundos con tirones: {} ({}). Conversión sin terminar {}, encoder sin pedir {}, descartados con la fila llena {}\n",
             tr.segundos, tr.causa, tr.conversion_sin_terminar, tr.encoder_sin_pedir, tr.descartados_fila_llena
         );
+        if tr.segundos > 0 {
+            m += &format!(
+                "  - En esos segundos: placa total 3D {} % · encoder total {} % · salida {} Mbps · cuadro más grande {} KB (clave en {}/{}) · latencia del encoder {} ms\n",
+                st(&tr.gpu_total_3d_pct),
+                st(&tr.gpu_total_encoder_pct),
+                st(&tr.enc_mbps),
+                st(&tr.enc_cuadro_max_kb),
+                tr.cuadro_max_clave,
+                tr.segundos,
+                st(&tr.enc_latencia_max_ms),
+            );
+        }
+        m += &format!("- Latencia del encoder (máximo de cada segundo): {} ms\n", st(&self.enc_latencia_max_ms));
         m += &format!(
             "- Trabajo del hilo por vuelta (máximo de cada segundo): {} ms, de {} ms por cuadro\n",
             st(&self.trabajo_por_cuadro_ms),

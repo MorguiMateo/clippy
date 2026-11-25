@@ -414,6 +414,13 @@ fn session(
         au.mic.poll(t0);
 
         cap.check(enc.poll(&mut out))?;
+        #[cfg(feature = "devtools")]
+        {
+            let got_at = now_100ns() - t0;
+            for p in &out {
+                perf.encoded(p.pts, p.data.len(), p.key, got_at);
+            }
+        }
         let added = out.len();
         packets.extend(out.drain(..));
         seal_gops(&mut packets, added);
@@ -446,9 +453,11 @@ fn session(
                     if reject {
                         anyhow::bail!("encoder de prueba: {w}x{h} no es múltiplo de 16 (0x80004005)");
                     }
+                    #[cfg(feature = "devtools")]
+                    let fed_at = now_100ns() - t0;
                     cap.check(enc.feed(&r.tex, r.pts, frame_dur))?;
                     #[cfg(feature = "devtools")]
-                    perf.fed();
+                    perf.fed(r.pts, fed_at);
                     c.pop();
                 }
                 #[cfg(feature = "devtools")]
