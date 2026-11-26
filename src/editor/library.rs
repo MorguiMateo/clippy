@@ -32,7 +32,51 @@ pub struct Asset {
     pub title: String,
     pub size: u64,
     pub modified: SystemTime,
+    /// Día en que se guardó, en la hora de la PC (días desde 1970: ver `local_day`).
+    pub day: i64,
     pub imported: bool,
+}
+
+/// En qué orden se ven los videos. En editor.json se guarda como "newest" / "oldest" / "largest".
+#[derive(Clone, Copy, PartialEq, Eq, Default, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Sort {
+    #[default]
+    Newest,
+    Oldest,
+    Largest,
+}
+
+impl Sort {
+    pub const ALL: [Sort; 3] = [Sort::Newest, Sort::Oldest, Sort::Largest];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Sort::Newest => "Newest first",
+            Sort::Oldest => "Oldest first",
+            Sort::Largest => "Largest first",
+        }
+    }
+
+    /// Ordenados por fecha, los videos se agrupan por día ("Today", "Yesterday"…).
+    pub fn by_date(self) -> bool {
+        self != Sort::Largest
+    }
+
+    pub fn apply(self, v: &mut [Asset]) {
+        match self {
+            Sort::Newest => v.sort_by_key(|a| std::cmp::Reverse(a.modified)),
+            Sort::Oldest => v.sort_by_key(|a| a.modified),
+            Sort::Largest => v.sort_by_key(|a| std::cmp::Reverse(a.size)),
+        }
+    }
+}
+
+/// Un video de la lista, si el archivo está.
+pub fn asset(p: PathBuf, imported: bool) -> Option<Asset> {
+    let m = std::fs::metadata(&p).ok()?;
+    let modified = m.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+    Some(Asset { title: pretty_name(&p), size: m.len(), modified, day: local_day(modified), path: p, imported })
 }
 
 #[derive(Default)]
@@ -411,17 +455,8 @@ pub fn scan(root: &Path, dir: Option<&Path>, imported: &[PathBuf]) -> (Vec<Folde
     let mut v: Vec<Asset> = Vec::new();
     let mut seen = HashSet::new();
     let mut add = |p: PathBuf, imported: bool| {
-        if !seen.insert(p.clone()) {
-            return;
-        }
-        if let Ok(m) = std::fs::metadata(&p) {
-            v.push(Asset {
-                title: pretty_name(&p),
-                size: m.len(),
-                modified: m.modified().unwrap_or(SystemTime::UNIX_EPOCH),
-                path: p,
-                imported,
-            });
+        if seen.insert(p.clone()) {
+            v.extend(asset(p, imported));
         }
     };
     for p in videos_in(dir.unwrap_or(root)) {
@@ -438,8 +473,97 @@ pub fn scan(root: &Path, dir: Option<&Path>, imported: &[PathBuf]) -> (Vec<Folde
         .map(|e| Folder { name: e.file_name().to_string_lossy().into_owned(), count: videos_in(&e.path()).count(), path: e.path() })
         .collect();
     folders.sort_by_key(|f| f.name.to_lowercase());
-    v.sort_by_key(|a| std::cmp::Reverse(a.modified));
     (folders, v)
+}
+
+/// Día de `t` en la hora de la PC, contado desde el 1/1/1970: dos fechas del mismo día dan el mismo número.
+pub fn local_day(t: SystemTime) -> i64 {
+    use windows::Win32::Foundation::{FILETIME, SYSTEMTIME};
+    use windows::Win32::System::Time::{FileTimeToSystemTime, SystemTimeToTzSpecificLocalTime};
+    // FILETIME: de a 100 ns desde 1601.
+    let since_1970 = t.duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default();
+    let ft = since_1970.as_nanos() as u64 / 100 + 116_444_736_000_000_000;
+    let ft = FILETIME { dwLowDateTime: ft as u32, dwHighDateTime: (ft >> 32) as u32 };
+    let (mut utc, mut local) = (SYSTEMTIME::default(), SYSTEMTIME::default());
+    let ok = unsafe { FileTimeToSystemTime(&ft, &mut utc).is_ok() && SystemTimeToTzSpecificLocalTime(None, &utc, &mut local).is_ok() };
+    if !ok {
+        return (since_1970.as_secs() / 86_400) as i64;
+    }
+    days_from_civil(local.wYear as i64, local.wMonth as i64, local.wDay as i64)
+}
+
+/// Días desde el 1/1/1970 de una fecha (algoritmo de Howard Hinnant).
+fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * (m + if m > 2 { -3 } else { 9 }) + 2) / 5 + d - 1;
+    era * 146_097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719_468
+}
+
+/// (año, mes) de un día contado desde 1970 (al revés que `days_from_civil`).
+fn civil_month(z: i64) -> (i64, i64) {
+    let z = z + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    (yoe + era * 400 + i64::from(m <= 2), m)
+}
+
+/// Título del grupo de un video guardado el día `day`, visto el día `today`: "Today", "Yesterday",
+/// "Last 7 days" y después el mes ("October 2026").
+pub fn day_group(day: i64, today: i64) -> String {
+    const MONTHS: [&str; 12] =
+        ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+    match today - day {
+        ..=0 => "Today".into(),
+        1 => "Yesterday".into(),
+        2..=6 => "Last 7 days".into(),
+        _ => {
+            let (y, m) = civil_month(day);
+            format!("{} {y}", MONTHS[(m - 1) as usize])
+        }
+    }
+}
+
+/// Deja los archivos en el portapapeles como los copia el Explorador: se pegan con Ctrl+V en Discord,
+/// WhatsApp o una carpeta. `owner`: una ventana de este proceso (sin dueño, Windows no guarda nada).
+pub fn copy_files(paths: &[PathBuf], owner: windows::Win32::Foundation::HWND) -> windows::core::Result<()> {
+    use windows::Win32::Foundation::{GlobalFree, HANDLE, POINT};
+    use windows::Win32::System::DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData};
+    use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
+    use windows::Win32::System::Ole::CF_HDROP;
+    use windows::Win32::UI::Shell::DROPFILES;
+    // DROPFILES y atrás las rutas en UTF-16, cada una con su cero y un cero más al final.
+    let mut names: Vec<u16> = paths.iter().flat_map(|p| p.as_os_str().encode_wide().chain([0])).collect();
+    names.push(0);
+    let head = std::mem::size_of::<DROPFILES>();
+    unsafe {
+        let mem = GlobalAlloc(GMEM_MOVEABLE, head + names.len() * 2)?;
+        let ptr = GlobalLock(mem) as *mut u8;
+        if ptr.is_null() {
+            let _ = GlobalFree(mem);
+            return Err(windows::core::Error::from_win32());
+        }
+        let df = DROPFILES { pFiles: head as u32, pt: POINT::default(), fNC: false.into(), fWide: true.into() };
+        std::ptr::write_unaligned(ptr as *mut DROPFILES, df);
+        std::ptr::copy_nonoverlapping(names.as_ptr() as *const u8, ptr.add(head), names.len() * 2);
+        let _ = GlobalUnlock(mem);
+        if let Err(e) = OpenClipboard(owner) {
+            let _ = GlobalFree(mem);
+            return Err(e);
+        }
+        let r = EmptyClipboard().and_then(|_| SetClipboardData(CF_HDROP.0 as u32, HANDLE(mem.0)));
+        let _ = CloseClipboard();
+        // Si Windows lo tomó, la memoria ya es suya.
+        if r.is_err() {
+            let _ = GlobalFree(mem);
+        }
+        r.map(|_| ())
+    }
 }
 
 /// Repite `op` un rato si falla: el editor (o el que lee las miniaturas) puede tener el archivo abierto un

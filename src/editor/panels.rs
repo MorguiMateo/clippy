@@ -311,6 +311,10 @@ impl EditorApp {
                                 if button(ui, "Watch video", Kind::Secondary).clicked() {
                                     let _ = std::process::Command::new("explorer").arg(&out).spawn();
                                 }
+                                let tip = "Paste it with Ctrl+V in Discord, a chat or a folder";
+                                if icon_button(ui, Glyph::Copy, "Copy", Kind::Secondary, Vec2::ZERO).on_hover_text(tip).clicked() {
+                                    self.copy_files(std::slice::from_ref(&out));
+                                }
                             }
                             ui.add(egui::Label::new(RichText::new(msg).color(if ok { TEXT } else { DANGER })).truncate());
                         });

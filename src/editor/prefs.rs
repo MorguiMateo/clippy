@@ -1,11 +1,14 @@
 //! Preferencias propias del editor (%APPDATA%\Clippy\editor.json): atajos de teclado, últimas
-//! opciones de exportación, tamaño de los paneles y el imán. Solo el editor las lee y las escribe.
+//! opciones de exportación, tamaño de los paneles, el imán y los favoritos y el orden de la biblioteca. Solo el
+//! editor las lee y las escribe.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
 use super::export::Quality;
+use super::library::Sort;
 use super::shortcuts::Keys;
 use crate::log::app_dir;
 
@@ -28,6 +31,10 @@ pub(super) struct Prefs {
     pub(super) lane_split: f32,
     /// Imán: las piezas de cada pista quedan pegadas una detrás de la otra.
     pub(super) magnet: bool,
+    /// Videos marcados con la estrella en la biblioteca (siguen al archivo si se mueve desde el editor).
+    pub(super) favorites: HashSet<PathBuf>,
+    /// En qué orden se ven los videos de la biblioteca.
+    pub(super) library_sort: Sort,
 }
 
 impl Default for Prefs {
@@ -43,6 +50,8 @@ impl Default for Prefs {
             timeline_h: 268.0,
             lane_split: 0.6,
             magnet: true,
+            favorites: HashSet::new(),
+            library_sort: Sort::Newest,
         }
     }
 }

@@ -265,6 +265,11 @@ pub enum Glyph {
     NewFolder,
     /// Flecha hacia la izquierda (volver).
     Back,
+    /// Estrella: vacía (marcar como favorito) y llena (favorito).
+    Star,
+    StarFilled,
+    /// Dos hojas encimadas (copiar).
+    Copy,
     /// Cuatro esquinas hacia afuera (pantalla completa) y hacia adentro (salir de pantalla completa).
     Fullscreen,
     ExitFullscreen,
@@ -375,6 +380,31 @@ fn glyph_shapes(g: Glyph, c: Pos2, col: Color32) -> Vec<Shape> {
             Shape::line_segment([p(0.0, -0.15), p(0.0, 0.55)], st),
         ],
         Glyph::Back => vec![Shape::line_segment([p(0.85, 0.0), p(-0.85, 0.0)], st), Shape::line(vec![p(-0.2, -0.65), p(-0.85, 0.0), p(-0.2, 0.65)], st)],
+        Glyph::Star | Glyph::StarFilled => {
+            // Cinco puntas (radio 1) y cinco vértices de adentro (radio 0,42), arrancando arriba.
+            let pts: Vec<Pos2> = (0..10)
+                .map(|i| {
+                    let a = i as f32 * std::f32::consts::PI / 5.0 - std::f32::consts::FRAC_PI_2;
+                    let r = if i % 2 == 0 { 1.0 } else { 0.42 };
+                    p(r * a.cos(), r * a.sin() + 0.08)
+                })
+                .collect();
+            if matches!(g, Glyph::Star) {
+                return vec![Shape::closed_line(pts, st)];
+            }
+            // Llena: la estrella no es convexa, así que va el pentágono del medio y una punta por lado.
+            let inner: Vec<Pos2> = pts.iter().skip(1).step_by(2).copied().collect();
+            let mut v = vec![Shape::convex_polygon(inner, col, Stroke::NONE)];
+            for i in (0..10).step_by(2) {
+                v.push(Shape::convex_polygon(vec![pts[(i + 9) % 10], pts[i], pts[i + 1]], col, Stroke::NONE));
+            }
+            v.push(Shape::closed_line(pts, Stroke::new(1.0_f32, col)));
+            v
+        }
+        Glyph::Copy => vec![
+            Shape::rect_stroke(Rect::from_min_max(p(-0.35, -0.35), p(0.95, 1.0)), 2.0, st),
+            Shape::line(vec![p(-0.95, 0.55), p(-0.95, -1.0), p(0.5, -1.0)], st),
+        ],
         Glyph::Fullscreen | Glyph::ExitFullscreen => {
             // La punta de cada esquina: en el borde (afuera) o cerca del centro (adentro).
             let k = if matches!(g, Glyph::Fullscreen) { 1.0 } else { 0.35 };

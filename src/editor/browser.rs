@@ -1,16 +1,19 @@
 //! Panel de la biblioteca: los videos de la carpeta de clips (y de sus carpetas) y los importados.
 //! Un clic elige (con Ctrl se suma, con Shift se elige un tramo) y arrastrar desde cualquier lado elige con un
 //! recuadro; doble clic o el "+" de una tarjeta la suma a la línea de tiempo. Lo elegido se mueve a una carpeta
-//! o se manda a la Papelera de reciclaje (los importados solo salen de la lista: el archivo no se toca).
+//! o se manda a la Papelera de reciclaje (los importados solo salen de la lista: el archivo no se toca), se copia
+//! para pegarlo en un chat o se marca con la estrella. Ordenados por fecha, los videos se agrupan por día.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use eframe::egui::{self, Align, Align2, Color32, CursorIcon, FontId, Layout, Pos2, Rect, RichText, Sense, Shape, Stroke, Vec2};
 
 use crate::ui_kit::theme::*;
 use crate::ui_kit::window::open_folder;
-use super::library::{self, Asset, Folder};
+use super::library::{self, Asset, Folder, Sort};
+use crate::app::mode::Window;
 use super::shortcuts::{self, Act};
 use super::EditorApp;
 
@@ -20,6 +23,11 @@ const GAP: f32 = 10.0;
 const ROW_GAP: f32 = 6.0;
 /// Radio del "+" de una tarjeta.
 const ADD_R: f32 = 13.0;
+/// Lado de la estrella de una tarjeta (lo que se toca), a la derecha del título.
+const STAR: f32 = 20.0;
+/// Alto del título de un grupo de días ("Today") y espacio antes de cada grupo menos el primero.
+const GROUP_H: f32 = 30.0;
+const GROUP_GAP: f32 = 10.0;
 /// Con el recuadro de selección a menos de esto del borde de arriba o de abajo, la lista se desplaza sola.
 const EDGE: f32 = 40.0;
 const AUTO_SCROLL: f32 = 700.0;
@@ -40,7 +48,17 @@ pub(super) struct Browser {
     set_scroll: Option<f32>,
     /// Lo último que se tocó es la biblioteca: Supr borra lo elegido acá y no en la línea de tiempo.
     pub(super) focus: bool,
+    /// Se ven solo los favoritos, de todas las carpetas.
+    favorites: bool,
     dialog: Option<Dialog>,
+}
+
+/// Qué va en cada lugar de la grilla.
+enum Slot {
+    Folder(usize),
+    Asset(usize),
+    /// Título de un grupo de días.
+    Group(String),
 }
 
 enum Dialog {
@@ -62,7 +80,8 @@ fn videos(n: usize) -> String {
 }
 
 /// Lo que entra en el renglón de abajo de una tarjeta: tamaño y de dónde viene.
-fn asset_card(ui: &mut egui::Ui, rect: Rect, a: &Asset, info: Option<&library::Info>, selected: bool, used: bool) -> (egui::Response, bool) {
+/// Devuelve la respuesta de la tarjeta, si se tocó el "+" y si se tocó la estrella.
+fn asset_card(ui: &mut egui::Ui, rect: Rect, a: &Asset, info: Option<&library::Info>, selected: bool, used: bool, fav: bool) -> (egui::Response, bool, bool) {
     let resp = ui.interact(rect, ui.id().with(("asset", &a.path)), Sense::click());
     let thumb = Rect::from_min_size(rect.min, egui::vec2(rect.width(), rect.height() - CARD_TEXT_H));
     let p = ui.painter();
@@ -96,7 +115,7 @@ fn asset_card(ui: &mut egui::Ui, rect: Rect, a: &Asset, info: Option<&library::I
     } else if hovered {
         shapes.push(Shape::rect_stroke(thumb, 6.0, Stroke::new(1.0_f32, BORDER)));
     }
-    let title = one_line(p, a.title.clone(), FontId::proportional(13.0), rect.width() - 4.0);
+    let title = one_line(p, a.title.clone(), FontId::proportional(13.0), rect.width() - 4.0 - STAR);
     shapes.push(Shape::galley(Pos2::new(rect.left() + 2.0, thumb.bottom() + 6.0), title, TEXT));
     let sub = format!("{}{}", fmt_bytes(a.size as f64), if a.imported { " · imported" } else { "" });
     let sub = one_line(p, sub, FontId::proportional(11.5), rect.width() - 4.0);
@@ -113,9 +132,34 @@ fn asset_card(ui: &mut egui::Ui, rect: Rect, a: &Asset, info: Option<&library::I
         paint_pressed(ui, c, press(ui, &r), PRESS_DEPTH_ICON, plus);
         add = r.on_hover_cursor(CursorIcon::PointingHand).on_hover_text(add_label()).clicked();
     }
+    // Estrella: siempre en los favoritos; en los demás, con el mouse encima para poder marcarlos.
+    let mut star = false;
+    if fav || hovered {
+        let c = Pos2::new(rect.right() - STAR / 2.0, thumb.bottom() + 6.0 + 8.0);
+        let r = ui.interact(Rect::from_center_size(c, Vec2::splat(STAR)), resp.id.with("star"), Sense::click());
+        let (g, col) = match (fav, r.hovered()) {
+            (true, _) => (Glyph::StarFilled, TEXT),
+            (false, true) => (Glyph::Star, TEXT),
+            (false, false) => (Glyph::Star, MUTED),
+        };
+        paint_pressed(ui, c, press(ui, &r), PRESS_DEPTH_ICON, glyph(g, c, 13.0, col));
+        let tip = if fav { "Remove from favorites" } else { "Add to favorites" };
+        star = r.on_hover_cursor(CursorIcon::PointingHand).on_hover_text(tip).clicked();
+    }
     let title = &a.title;
     let resp = resp.on_hover_text(format!("{title}\nDouble-click to add it to the timeline"));
-    (resp, add)
+    (resp, add, star)
+}
+
+/// Lugar de la próxima tarjeta en la grilla de dos columnas (`col` 0 o 1, `y` arriba de la fila).
+fn next_card(y: &mut f32, col: &mut usize, w: f32, card: Vec2, row_h: f32) -> Rect {
+    let r = Rect::from_min_size(Pos2::new(*col as f32 * (w + GAP), *y), card);
+    *col += 1;
+    if *col == 2 {
+        *col = 0;
+        *y += row_h;
+    }
+    r
 }
 
 fn folder_card(ui: &mut egui::Ui, rect: Rect, f: &Folder) -> egui::Response {
@@ -141,6 +185,9 @@ fn folder_card(ui: &mut egui::Ui, rect: Rect, f: &Folder) -> egui::Response {
 /// Lo que se pidió desde la lista (se hace después de dibujarla).
 enum Do {
     Add(Vec<PathBuf>),
+    Copy(Vec<PathBuf>),
+    /// Marcar (true) o desmarcar como favoritos.
+    Favorite(Vec<PathBuf>, bool),
     Open(Option<PathBuf>),
     Reveal(PathBuf),
     Move(Vec<PathBuf>, PathBuf),
@@ -155,8 +202,13 @@ impl EditorApp {
             self.open_dir(None);
             return;
         }
-        let (folders, assets) = library::scan(&self.cfg.output_dir, self.browser.dir.as_deref(), &self.imported);
+        let (folders, mut assets) = library::scan(&self.cfg.output_dir, self.browser.dir.as_deref(), &self.imported);
         self.browser.folders = folders;
+        if self.browser.favorites {
+            let imported = |p: &PathBuf| self.imported.contains(p);
+            assets = self.prefs.favorites.iter().filter_map(|p| library::asset(p.clone(), imported(p))).collect();
+        }
+        self.prefs.library_sort.apply(&mut assets);
         self.assets = assets;
         let shown: HashSet<&Path> = self.assets.iter().map(|a| a.path.as_path()).collect();
         self.browser.sel.retain(|p| shown.contains(p.as_path()));
@@ -165,6 +217,7 @@ impl EditorApp {
     /// Muestra otra carpeta (None = la de los clips).
     pub(super) fn open_dir(&mut self, dir: Option<PathBuf>) {
         self.browser.dir = dir;
+        self.browser.favorites = false;
         self.browser.sel.clear();
         self.browser.anchor = None;
         self.browser.set_scroll = Some(0.0);
@@ -174,6 +227,51 @@ impl EditorApp {
     /// Lo elegido, en el orden de la lista.
     fn selected_assets(&self) -> Vec<PathBuf> {
         self.assets.iter().filter(|a| self.browser.sel.contains(&a.path)).map(|a| a.path.clone()).collect()
+    }
+
+    /// Muestra solo los favoritos (de todas las carpetas) o vuelve a la biblioteca.
+    fn show_favorites(&mut self, on: bool) {
+        self.open_dir(None);
+        self.browser.favorites = on;
+        self.scan();
+    }
+
+    /// Cuántas carpetas se ven arriba de los videos: solo en la de los clips.
+    fn shown_folders(&self) -> usize {
+        if self.browser.dir.is_none() && !self.browser.favorites {
+            self.browser.folders.len()
+        } else {
+            0
+        }
+    }
+
+    /// Deja los videos en el portapapeles para pegarlos en Discord, WhatsApp o una carpeta.
+    pub(super) fn copy_files(&mut self, paths: &[PathBuf]) {
+        let copied = Window::Editor.find().ok_or_else(windows::core::Error::from_win32).and_then(|h| library::copy_files(paths, h));
+        self.message = Some(match copied {
+            Ok(()) => {
+                let what = if paths.len() == 1 { "Copied".to_string() } else { format!("Copied {}", videos(paths.len())) };
+                (true, format!("{what}: paste with Ctrl+V in Discord, a chat or a folder."), None)
+            }
+            Err(e) => {
+                crate::log::log(&format!("biblioteca: no se pudo copiar al portapapeles: {e}"));
+                (false, "Couldn't copy: another program is using the clipboard. Try again.".into(), None)
+            }
+        });
+    }
+
+    fn set_favorite(&mut self, paths: Vec<PathBuf>, on: bool) {
+        for p in paths {
+            if on {
+                self.prefs.favorites.insert(p);
+            } else {
+                self.prefs.favorites.remove(&p);
+            }
+        }
+        self.prefs.save();
+        if self.browser.favorites {
+            self.scan();
+        }
     }
 
     fn is_used(&self, p: &Path) -> bool {
@@ -189,6 +287,12 @@ impl EditorApp {
         ui.horizontal(|ui| {
             ui.set_height(32.0);
             match self.browser.dir.clone() {
+                None if self.browser.favorites => {
+                    if icon_only_button(ui, Glyph::Back, Kind::Ghost, "Back to the library").clicked() {
+                        todo.push(Do::Open(None));
+                    }
+                    ui.label(RichText::new("Favorites").family(bold()).size(17.0).color(TEXT));
+                }
                 Some(dir) => {
                     if icon_only_button(ui, Glyph::Back, Kind::Ghost, "Back to the library").clicked() {
                         todo.push(Do::Open(None));
@@ -206,9 +310,28 @@ impl EditorApp {
                 if icon_button(ui, Glyph::Plus, "Import", Kind::Secondary, Vec2::ZERO).on_hover_text(tip).clicked() {
                     self.import_dialog();
                 }
-                if self.browser.dir.is_none() && icon_only_button(ui, Glyph::NewFolder, Kind::Ghost, NEW_FOLDER).clicked() {
+                let root = self.browser.dir.is_none() && !self.browser.favorites;
+                if root && icon_only_button(ui, Glyph::NewFolder, Kind::Ghost, NEW_FOLDER).clicked() {
                     todo.push(Do::Dialog(Dialog::Name { name: NEW_FOLDER.into(), files: Vec::new(), rename: None, error: None }));
                 }
+                let fav = self.browser.favorites;
+                let tip = if fav { "Show the whole library" } else { "Show only favorites, from every folder" };
+                if icon_toggle(ui, Glyph::Star, fav, tip).clicked() {
+                    self.show_favorites(!fav);
+                }
+                let sort = self.prefs.library_sort;
+                ui.menu_button(RichText::new(sort.label()).size(12.5).color(MUTED), |ui| {
+                    for s in Sort::ALL {
+                        if ui.selectable_label(s == sort, s.label()).clicked() {
+                            self.prefs.library_sort = s;
+                            self.prefs.save();
+                            self.scan();
+                            ui.close_menu();
+                        }
+                    }
+                })
+                .response
+                .on_hover_text("Order of the videos");
             });
         });
         ui.add_space(10.0);
@@ -231,6 +354,9 @@ impl EditorApp {
                             if icon_only_button(ui, Glyph::Trash, Kind::Ghost, "Delete (Del)").clicked() {
                                 todo.push(Do::Dialog(Dialog::Delete(self.selected_assets())));
                             }
+                            if icon_only_button(ui, Glyph::Copy, Kind::Ghost, "Copy, to paste it in Discord, a chat or a folder").clicked() {
+                                todo.push(Do::Copy(self.selected_assets()));
+                            }
                             if icon_button(ui, Glyph::Plus, "Add", Kind::Secondary, Vec2::ZERO).on_hover_text(add_label()).clicked() {
                                 todo.push(Do::Add(self.selected_assets()));
                             }
@@ -239,10 +365,14 @@ impl EditorApp {
                 });
         }
 
-        let nf = if self.browser.dir.is_none() { self.browser.folders.len() } else { 0 };
+        let nf = self.shown_folders();
         if nf + self.assets.len() == 0 {
             ui.add_space(24.0);
-            if self.browser.dir.is_some() {
+            if self.browser.favorites {
+                ui.label(RichText::new("No favorites yet.").color(TEXT));
+                let hint = "Click the star next to a clip's name to find it here, whatever folder it's in.";
+                ui.label(RichText::new(hint).color(MUTED));
+            } else if self.browser.dir.is_some() {
                 ui.label(RichText::new("This folder is empty.").color(TEXT));
                 let hint = "To bring clips here, select them in the library and use “Move to” with a right-click.";
                 ui.label(RichText::new(hint).color(MUTED));
@@ -261,6 +391,8 @@ impl EditorApp {
                         self.add_to_timeline(&p);
                     }
                 }
+                Do::Copy(paths) => self.copy_files(&paths),
+                Do::Favorite(paths, on) => self.set_favorite(paths, on),
                 Do::Open(dir) => self.open_dir(dir),
                 Do::Reveal(p) => {
                     let _ = std::process::Command::new("explorer").arg(format!("/select,{}", p.display())).spawn();
@@ -272,63 +404,100 @@ impl EditorApp {
     }
 
     fn library_grid(&mut self, ui: &mut egui::Ui, todo: &mut Vec<Do>) {
-        let nf = if self.browser.dir.is_none() { self.browser.folders.len() } else { 0 };
+        let nf = self.shown_folders();
         let w = ((ui.available_width() - GAP) / 2.0).floor();
         let card = egui::vec2(w, (w * 9.0 / 16.0).round() + CARD_TEXT_H);
         let row_h = card.y + ROW_GAP;
-        let n = nf + self.assets.len();
+        // Dónde va cada cosa: las carpetas, y los videos de a dos por fila, cada grupo de días con su título.
+        let mut slots: Vec<(Rect, Slot)> = Vec::with_capacity(nf + self.assets.len());
+        let (mut y, mut col) = (0.0, 0);
+        for i in 0..nf {
+            slots.push((next_card(&mut y, &mut col, w, card, row_h), Slot::Folder(i)));
+        }
+        let today = library::local_day(SystemTime::now());
+        let mut group: Option<(i64, String)> = None;
+        for (i, a) in self.assets.iter().enumerate() {
+            if self.prefs.library_sort.by_date() && group.as_ref().is_none_or(|(d, _)| *d != a.day) {
+                let g = library::day_group(a.day, today);
+                if group.as_ref().is_none_or(|(_, last)| *last != g) {
+                    if col != 0 {
+                        col = 0;
+                        y += row_h;
+                    }
+                    if !slots.is_empty() {
+                        y += GROUP_GAP;
+                    }
+                    slots.push((Rect::from_min_size(Pos2::new(0.0, y), egui::vec2(w * 2.0 + GAP, GROUP_H)), Slot::Group(g.clone())));
+                    y += GROUP_H;
+                }
+                group = Some((a.day, g));
+            }
+            slots.push((next_card(&mut y, &mut col, w, card, row_h), Slot::Asset(i)));
+        }
+        let height = if col == 0 { y } else { y + row_h };
         let used: HashSet<&Path> = self.tracks.iter().flat_map(|t| t.clips.iter().map(|p| p.path.as_path())).collect();
-        let mut sa = egui::ScrollArea::vertical().id_salt(("lib", &self.browser.dir)).auto_shrink([false, false]).drag_to_scroll(false);
+        let mut sa = egui::ScrollArea::vertical().id_salt(("lib", &self.browser.dir, self.browser.favorites)).auto_shrink([false, false]).drag_to_scroll(false);
         if let Some(y) = self.browser.set_scroll.take() {
             sa = sa.vertical_scroll_offset(y);
         }
         let b = &mut self.browser;
+        let favs = &self.prefs.favorites;
         let out = sa.show_viewport(ui, |ui, view| {
-            ui.set_height(n.div_ceil(2) as f32 * row_h);
+            ui.set_height(height);
             let origin = ui.max_rect().min;
-            let at = |k: usize| Rect::from_min_size(Pos2::new((k % 2) as f32 * (w + GAP), (k / 2) as f32 * row_h), card);
             // Fondo: arrastrar elige con un recuadro (también empezando sobre una tarjeta); un clic ahí no elige nada.
             let bg = ui.interact(view.translate(origin.to_vec2()), ui.id().with("lib_bg"), Sense::click_and_drag());
-            let first = (view.top() / row_h).floor().max(0.0) as usize * 2;
-            let last = ((view.bottom() / row_h).ceil() as usize * 2).min(n);
-            for k in first.max(nf)..last {
-                let a = &self.assets[k - nf];
-                self.loader.want_cover(&a.path, (a.size, a.modified));
+            let visible: Vec<&(Rect, Slot)> = slots.iter().filter(|(r, _)| r.intersects(view)).collect();
+            for (_, s) in &visible {
+                if let Slot::Asset(i) = s {
+                    let a = &self.assets[*i];
+                    self.loader.want_cover(&a.path, (a.size, a.modified));
+                }
             }
             let info = self.loader.info.lock().unwrap();
-            for k in first..last {
-                let rect = at(k).translate(origin.to_vec2());
-                if k < nf {
-                    let f = &b.folders[k];
-                    let r = folder_card(ui, rect, f);
-                    if r.clicked() {
-                        todo.push(Do::Open(Some(f.path.clone())));
+            for (r, s) in visible {
+                let rect = r.translate(origin.to_vec2());
+                let ai = match s {
+                    Slot::Group(g) => {
+                        let at = Pos2::new(rect.left() + 2.0, rect.bottom() - 8.0);
+                        ui.painter().text(at, Align2::LEFT_BOTTOM, g, FontId::new(13.0, bold()), TEXT);
+                        continue;
                     }
-                    r.context_menu(|ui| {
-                        if ui.button("Open").clicked() {
+                    Slot::Folder(k) => {
+                        let f = &b.folders[*k];
+                        let r = folder_card(ui, rect, f);
+                        if r.clicked() {
                             todo.push(Do::Open(Some(f.path.clone())));
-                            ui.close_menu();
                         }
-                        if ui.button("Rename…").clicked() {
-                            todo.push(Do::Dialog(Dialog::Name { name: f.name.clone(), files: Vec::new(), rename: Some(f.path.clone()), error: None }));
-                            ui.close_menu();
-                        }
-                        if ui.button("Open in File Explorer").clicked() {
-                            open_folder(&f.path);
-                            ui.close_menu();
-                        }
-                        ui.separator();
-                        if ui.button(RichText::new("Delete folder…").color(DANGER)).clicked() {
-                            todo.push(Do::Dialog(Dialog::DeleteFolder(f.path.clone())));
-                            ui.close_menu();
-                        }
-                    });
-                    continue;
-                }
-                let ai = k - nf;
+                        r.context_menu(|ui| {
+                            if ui.button("Open").clicked() {
+                                todo.push(Do::Open(Some(f.path.clone())));
+                                ui.close_menu();
+                            }
+                            if ui.button("Rename…").clicked() {
+                                todo.push(Do::Dialog(Dialog::Name { name: f.name.clone(), files: Vec::new(), rename: Some(f.path.clone()), error: None }));
+                                ui.close_menu();
+                            }
+                            if ui.button("Open in File Explorer").clicked() {
+                                open_folder(&f.path);
+                                ui.close_menu();
+                            }
+                            ui.separator();
+                            if ui.button(RichText::new("Delete folder…").color(DANGER)).clicked() {
+                                todo.push(Do::Dialog(Dialog::DeleteFolder(f.path.clone())));
+                                ui.close_menu();
+                            }
+                        });
+                        continue;
+                    }
+                    Slot::Asset(i) => *i,
+                };
                 let a = &self.assets[ai];
-                let (r, add) = asset_card(ui, rect, a, info.get(&a.path), b.sel.contains(&a.path), used.contains(a.path.as_path()));
-                if add {
+                let fav = favs.contains(&a.path);
+                let (r, add, star) = asset_card(ui, rect, a, info.get(&a.path), b.sel.contains(&a.path), used.contains(a.path.as_path()), fav);
+                if star {
+                    todo.push(Do::Favorite(vec![a.path.clone()], !fav));
+                } else if add {
                     todo.push(Do::Add(if b.sel.contains(&a.path) { self.assets.iter().filter(|x| b.sel.contains(&x.path)).map(|x| x.path.clone()).collect() } else { vec![a.path.clone()] }));
                 } else if r.double_clicked() {
                     todo.push(Do::Add(vec![a.path.clone()]));
@@ -370,6 +539,16 @@ impl EditorApp {
                     };
                     if ui.button(label).clicked() {
                         todo.push(Do::Add(paths.clone()));
+                        ui.close_menu();
+                    }
+                    if ui.button("Copy").on_hover_text("Paste it with Ctrl+V in Discord, a chat or a folder").clicked() {
+                        todo.push(Do::Copy(paths.clone()));
+                        ui.close_menu();
+                    }
+                    let all_fav = paths.iter().all(|p| favs.contains(p));
+                    let fav_label = if all_fav { "Remove from favorites" } else { "Add to favorites" };
+                    if ui.button(fav_label).clicked() {
+                        todo.push(Do::Favorite(paths.clone(), !all_fav));
                         ui.close_menu();
                     }
                     if n == 1 && ui.button("Show in File Explorer").clicked() {
@@ -419,7 +598,10 @@ impl EditorApp {
             if let (Some((start, keep)), Some(h), true) = (&b.marquee, pointer, bg.dragged()) {
                 let r = Rect::from_two_pos(*start, h - origin.to_vec2());
                 b.sel = keep.clone();
-                b.sel.extend((nf..n).filter(|&k| at(k).intersects(r)).map(|k| self.assets[k - nf].path.clone()));
+                b.sel.extend(slots.iter().filter_map(|(at, s)| match s {
+                    Slot::Asset(i) if at.intersects(r) => Some(self.assets[*i].path.clone()),
+                    _ => None,
+                }));
                 let shown = r.translate(origin.to_vec2());
                 ui.painter().rect_filled(shown, 2.0, WHITE.gamma_multiply(0.08));
                 ui.painter().rect_stroke(shown, 2.0, Stroke::new(1.0_f32, WHITE.gamma_multiply(0.6)));

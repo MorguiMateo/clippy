@@ -386,8 +386,11 @@ impl EditorApp {
         }
     }
 
-    /// Quita de la línea, y de lo que se puede deshacer, las piezas de archivos que ya no existen (`gone`).
+    /// Quita de la línea, de lo que se puede deshacer y de los favoritos los archivos que ya no existen (`gone`).
     pub(super) fn forget_files(&mut self, gone: &[PathBuf]) {
+        if gone.iter().any(|p| self.prefs.favorites.remove(p)) {
+            self.prefs.save();
+        }
         let magnet = self.prefs.magnet;
         for t in &mut self.tracks {
             for i in (0..t.clips.len()).rev() {
@@ -405,8 +408,12 @@ impl EditorApp {
         self.after_edit(pos);
     }
 
-    /// Un archivo cambió de lugar (`from` -> `to`): las piezas que lo usan lo siguen.
+    /// Un archivo cambió de lugar (`from` -> `to`): las piezas que lo usan y la estrella lo siguen.
     pub(super) fn moved_file(&mut self, from: &Path, to: &Path) {
+        if self.prefs.favorites.remove(from) {
+            self.prefs.favorites.insert(to.to_path_buf());
+            self.prefs.save();
+        }
         let fix = |t: &mut Vec<Track>| {
             for p in t.iter_mut().flat_map(|t| t.clips.iter_mut()).filter(|p| p.path == from) {
                 p.path = to.to_path_buf();
