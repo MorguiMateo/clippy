@@ -2,15 +2,17 @@
 //! comprime `track` mientras se graba): se copian tal cual, sin recodificar.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use anyhow::Result;
-use windows::core::HSTRING;
+use windows::core::{implement, HSTRING};
+use windows::Win32::Foundation::E_INVALIDARG;
 use windows::Win32::Media::MediaFoundation::*;
 
 use super::aac::AAC_FRAME;
-use super::encoder::Packet;
+use super::encoder::{Bytes, Packet};
 use super::track;
-use crate::mf::{self, time_of, Mf};
+use crate::mf::{time_of, Mf};
 
 pub struct Job {
     pub path: PathBuf,
@@ -41,12 +43,64 @@ unsafe fn media_type(blob: &[u8]) -> Result<IMFMediaType> {
     Ok(t)
 }
 
+/// Muestra que lee los bytes del paquete directo del buffer de la grabadora: con el Sink Writer sin freno
+/// (`MF_SINK_WRITER_DISABLE_THROTTLING`) todas las muestras del clip pueden quedar en su cola antes de llegar al disco,
+/// y con copias eso era el clip entero duplicado en RAM mientras se guardaba.
 unsafe fn sample(p: &Packet, time: i64, dur: i64) -> Result<IMFSample> {
-    let s = mf::sample(&p.data, time, dur.max(1))?;
+    let buf: IMFMediaBuffer = View { len: AtomicU32::new(p.data.len() as u32), data: p.data.clone() }.into();
+    let s = MFCreateSample()?;
+    s.AddBuffer(&buf)?;
+    s.SetSampleTime(time)?;
+    s.SetSampleDuration(dur.max(1))?;
     if p.key {
         s.SetUINT32(&MFSampleExtension_CleanPoint, 1)?;
     }
     Ok(s)
+}
+
+/// Un `IMFMediaBuffer` de solo lectura sobre los bytes de un paquete (el Sink Writer solo los lee para escribirlos).
+#[implement(IMFMediaBuffer)]
+struct View {
+    data: Bytes,
+    len: AtomicU32,
+}
+
+impl IMFMediaBuffer_Impl for View_Impl {
+    fn Lock(&self, ppbbuffer: *mut *mut u8, pcbmaxlength: *mut u32, pcbcurrentlength: *mut u32) -> windows::core::Result<()> {
+        unsafe {
+            if ppbbuffer.is_null() {
+                return Err(E_INVALIDARG.into());
+            }
+            *ppbbuffer = self.data.as_ptr() as *mut u8;
+            if !pcbmaxlength.is_null() {
+                *pcbmaxlength = self.data.len() as u32;
+            }
+            if !pcbcurrentlength.is_null() {
+                *pcbcurrentlength = self.len.load(Ordering::Relaxed);
+            }
+        }
+        Ok(())
+    }
+
+    fn Unlock(&self) -> windows::core::Result<()> {
+        Ok(())
+    }
+
+    fn GetCurrentLength(&self) -> windows::core::Result<u32> {
+        Ok(self.len.load(Ordering::Relaxed))
+    }
+
+    fn SetCurrentLength(&self, len: u32) -> windows::core::Result<()> {
+        if len as usize > self.data.len() {
+            return Err(E_INVALIDARG.into());
+        }
+        self.len.store(len, Ordering::Relaxed);
+        Ok(())
+    }
+
+    fn GetMaxLength(&self) -> windows::core::Result<u32> {
+        Ok(self.data.len() as u32)
+    }
 }
 
 /// Duración de cada paquete: hasta el siguiente (el último, `last`).
