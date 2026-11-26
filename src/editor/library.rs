@@ -671,17 +671,39 @@ const BAD_NAME: &str = "<>:\"/\\|?*";
 /// Largo máximo de un nombre: deja lugar a la carpeta de clips, " (2).mp4" y los 260 caracteres de una ruta.
 const NAME_MAX: usize = 80;
 
-/// Lo que va antes de la fecha en el nombre de un clip sin juego ("Clippy_2026-11-15_23-38-30.mp4").
+/// Cómo se llama un clip sin juego ("Clippy 3.mp4").
 const NO_GAME: &str = "Clippy";
 
-/// Nombre (sin extensión) de un clip guardado ahora: el juego y la fecha, "VALORANT_2026-11-15_23-38-30"; sin
-/// juego, "Clippy_2026-11-15_23-38-30". `n` (2, 3…) cuando ya hay otro clip de ese mismo segundo.
-pub fn clip_stem(game: Option<&str>, stamp: &str, n: u32) -> String {
+/// Carpeta, dentro de la del juego, donde van los clips que salen del editor: así no se mezclan con las grabaciones.
+pub const EDITED_DIR: &str = "editados";
+
+/// Nombre (sin extensión) del próximo clip de `game` en `dir`: el juego y un número que sigue al más alto que ya
+/// hay ahí, "VALORANT 4" después de "VALORANT 3". Sin juego, "Clippy 4".
+pub fn next_stem(dir: &Path, game: Option<&str>) -> String {
     let who = game.map(clean_name).filter(|g| !g.is_empty()).unwrap_or_else(|| NO_GAME.into());
-    if n > 1 {
-        format!("{who}_{stamp}_{n}")
-    } else {
-        format!("{who}_{stamp}")
+    let prefix = format!("{} ", who.to_lowercase());
+    let last = videos_in(dir)
+        .filter_map(|p| {
+            let stem = p.file_stem()?.to_string_lossy().to_lowercase();
+            stem.strip_prefix(&prefix)?.parse::<u32>().ok()
+        })
+        .max()
+        .unwrap_or(0);
+    format!("{who} {}", last + 1)
+}
+
+/// Dónde va lo que se edita a partir de `src` y de qué juego es: la carpeta `editados` dentro de la del juego (la
+/// que tiene el clip dentro de `root`, la de los clips), o dentro de `root` si el clip no es de ningún juego.
+pub fn edited_target(root: &Path, src: &Path) -> (PathBuf, Option<String>) {
+    let norm = |p: &Path| p.to_string_lossy().replace('/', "\\").trim_end_matches('\\').to_lowercase();
+    let mut dir = src.parent().unwrap_or(root);
+    if dir.file_name().is_some_and(|n| n.to_string_lossy().eq_ignore_ascii_case(EDITED_DIR)) {
+        dir = dir.parent().unwrap_or(root);
+    }
+    let game = dir.parent().filter(|up| norm(up) == norm(root)).and_then(|_| dir.file_name()).map(|n| n.to_string_lossy().into_owned());
+    match game {
+        Some(_) => (dir.join(EDITED_DIR), game),
+        None => (root.join(EDITED_DIR), None),
     }
 }
 

@@ -21,14 +21,6 @@ fn timestamp() -> String {
     )
 }
 
-pub fn file_stamp() -> String {
-    let t = unsafe { GetLocalTime() };
-    format!(
-        "{:04}-{:02}-{:02}_{:02}-{:02}-{:02}",
-        t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond
-    )
-}
-
 pub fn log(msg: &str) {
     let dir = app_dir();
     let _ = std::fs::create_dir_all(&dir);

@@ -6,7 +6,6 @@ use std::time::Duration;
 
 use eframe::egui::{self, Align, Layout, RichText};
 
-use crate::log::file_stamp;
 use crate::ui_kit::theme::*;
 use super::media::Progress;
 use crate::mf::Mf;
@@ -90,9 +89,13 @@ impl EditorApp {
             return;
         }
         self.pause();
+        let (dir, game) = match self.edit().first_video() {
+            Some(v) => library::edited_target(&self.cfg.output_dir, &v.path),
+            None => (self.cfg.output_dir.join(library::EDITED_DIR), None),
+        };
         self.export_dlg = Some(ExportDialog {
-            name: format!("Clippy_edit_{}", file_stamp()),
-            dir: self.cfg.output_dir.clone(),
+            name: library::next_stem(&dir, game.as_deref()),
+            dir,
             height: self.prefs.export_height,
             fps: self.prefs.export_fps,
             quality: self.prefs.export_quality,
@@ -349,6 +352,11 @@ impl EditorApp {
 
     fn start_export(&mut self, d: &ExportDialog, plan: &ExportPlan) {
         let clean = library::clean_name(&d.name);
+        if let Err(e) = std::fs::create_dir_all(&d.dir) {
+            crate::log::log(&format!("exportar: no se pudo crear {}: {e}", d.dir.display()));
+            self.message = Some((false, format!("Couldn't create the folder: {e}"), None));
+            return;
+        }
         let mut out = d.dir.join(format!("{clean}.mp4"));
         let mut n = 2;
         while out.exists() {
