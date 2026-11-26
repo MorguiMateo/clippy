@@ -547,17 +547,44 @@ const BAD_NAME: &str = "<>:\"/\\|?*";
 /// Largo máximo de un nombre: deja lugar a la carpeta de clips, " (2).mp4" y los 260 caracteres de una ruta.
 const NAME_MAX: usize = 80;
 
-/// "Clippy_2026-11-15_23-38-30" -> "15/11 · 23:38:30" (en inglés, "11/15 · 23:38:30")
+/// Lo que va antes de la fecha en el nombre de un clip sin juego ("Clippy_2026-11-15_23-38-30.mp4").
+const NO_GAME: &str = "Clippy";
+
+/// Nombre (sin extensión) de un clip guardado ahora: el juego y la fecha, "VALORANT_2026-11-15_23-38-30"; sin
+/// juego, "Clippy_2026-11-15_23-38-30". `n` (2, 3…) cuando ya hay otro clip de ese mismo segundo.
+pub fn clip_stem(game: Option<&str>, stamp: &str, n: u32) -> String {
+    let who = game.map(clean_name).filter(|g| !g.is_empty()).unwrap_or_else(|| NO_GAME.into());
+    if n > 1 {
+        format!("{who}_{stamp}_{n}")
+    } else {
+        format!("{who}_{stamp}")
+    }
+}
+
+/// Título de un clip a partir de su nombre: "VALORANT_2026-11-15_23-38-30" -> "VALORANT · 11/15 · 23:38:30". El
+/// juego no se repite si el clip está en la carpeta con su nombre, ni sale en los clips sin juego. Otros nombres
+/// quedan como están.
 pub fn pretty_name(p: &Path) -> String {
     let stem = p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
-    if let Some(rest) = stem.strip_prefix("Clippy_") {
-        let parts: Vec<&str> = rest.split(['_', '-']).collect();
-        if parts.len() >= 6 && parts[..6].iter().all(|x| x.chars().all(|c| c.is_ascii_digit())) {
-            let extra = if parts.len() > 6 { format!(" ({})", parts[6..].join(" ")) } else { String::new() };
-            // Día y mes en el orden de cada idioma (en inglés, mes/día).
-            let (a, b) = (parts[1], parts[2]);
-            return format!("{a}/{b} · {}:{}:{}{extra}", parts[3], parts[4], parts[5]);
-        }
+    let parts: Vec<&str> = stem.split('_').collect();
+    let digits = |x: &str, groups: usize| {
+        let g: Vec<&str> = x.split('-').collect();
+        g.len() == groups && g.iter().all(|d| !d.is_empty() && d.chars().all(|c| c.is_ascii_digit()))
+    };
+    // La fecha y la hora van juntas ("2026-11-15", "23-38-30"); lo de antes es el juego y lo de después, el número.
+    let Some(at) = (1..parts.len().saturating_sub(1)).rev().find(|&i| digits(parts[i], 3) && digits(parts[i + 1], 3)) else {
+        return stem;
+    };
+    let (date, time): (Vec<&str>, Vec<&str>) = (parts[at].split('-').collect(), parts[at + 1].split('-').collect());
+    let mut title = format!("{}/{} · {}", date[1], date[2], time.join(":"));
+    let who = parts[..at].join(" ");
+    let folder = p.parent().and_then(|d| d.file_name()).map(|d| d.to_string_lossy().replace('_', " "));
+    if who != NO_GAME && folder.as_deref() != Some(who.as_str()) {
+        title = format!("{who} · {title}");
     }
-    stem
+    let extra = &parts[at + 2..];
+    if !extra.is_empty() {
+        title = format!("{title} ({})", extra.join(" "));
+    }
+    title
 }

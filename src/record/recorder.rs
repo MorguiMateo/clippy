@@ -24,7 +24,7 @@ use super::encoder::{Bytes, Device, Encoder, Packet};
 use super::track::{self, Input, Track};
 use super::{game, mux, screen};
 use crate::config::{CaptureMode, Config};
-use crate::editor::library::clean_name;
+use crate::editor::library::{clean_name, clip_stem};
 use crate::log::{file_stamp, log};
 use crate::mf::{frames_at, time_of, Mf};
 use crate::ui_kit::sound;
@@ -683,14 +683,16 @@ fn save_clip(cfg: &Config, packets: &VecDeque<Packet>, enc: &Encoder, au: &Audio
 
     // Mientras el juego esté abierto, sus clips van a una carpeta con su nombre adentro de la de los clips (aunque se
     // guarde con Alt+Tab en el escritorio). Sin juego, a la de los clips.
-    let game_dir = au.game.name().map(|g| clean_name(&g)).filter(|g| !g.is_empty());
+    // El nombre del archivo también lleva el juego, para que se sepa de dónde es aunque se mueva de carpeta.
+    let game = au.game.name();
+    let game_dir = game.as_deref().map(clean_name).filter(|g| !g.is_empty());
     let dir = game_dir.map_or_else(|| cfg.output_dir.clone(), |g| cfg.output_dir.join(g));
     let stamp = file_stamp();
-    let mut path = dir.join(format!("Clippy_{stamp}.mp4"));
-    let mut i = 2;
+    let mut n = 1;
+    let mut path = dir.join(format!("{}.mp4", clip_stem(game.as_deref(), &stamp, n)));
     while path.exists() {
-        path = dir.join(format!("Clippy_{stamp}_{i}.mp4"));
-        i += 1;
+        n += 1;
+        path = dir.join(format!("{}.mp4", clip_stem(game.as_deref(), &stamp, n)));
     }
     let notify = notify.clone();
     // Cuánto se frenó el hilo de grabación, cuánto tardó comprimir la cola del audio ("mezcla") y cuánto escribir el MP4
