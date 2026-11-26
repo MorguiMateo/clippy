@@ -153,7 +153,7 @@ impl Track {
         // silencio hasta ahí.
         let bucket = |t: i64| (frames_at(t) - self.start).div_euclid(PER) - self.first_bucket;
         let (b0, b1) = (bucket(from), bucket(to));
-        let pad = (-b0).clamp(0, b1.max(0));
+        let pad = (-b0).clamp(0, (b1 - b0).max(0));
         let have = self.buckets.range(b0.clamp(0, self.buckets.len() as i64) as usize..b1.clamp(0, self.buckets.len() as i64) as usize);
         let wave = std::iter::repeat_n((0, 0), pad as usize).chain(have.copied()).collect();
         Some(Clip { type_blob: self.aac.type_blob.clone(), packets, wave })
