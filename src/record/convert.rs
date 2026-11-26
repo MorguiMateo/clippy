@@ -1,6 +1,5 @@
-//! Conversión BGRA -> NV12 con el procesador de video de la GPU (sin shaders ni CPU), en una sola pasada desde la imagen
-//! capturada. También endereza monitores verticales, estira la resolución estirada y encaja un monitor de otra forma sin
-//! deformarlo.
+//! Conversión BGRA -> NV12 con el procesador de video de la GPU (sin shaders ni CPU).
+//! También endereza monitores verticales, estira la resolución estirada y encaja un monitor de otra forma sin deformarlo.
 
 use std::collections::VecDeque;
 use std::mem::ManuallyDrop;
@@ -24,33 +23,14 @@ struct Slot {
     done: ID3D11Query,
 }
 
-/// Tamaño, formato, rotación y forma de las imágenes que convierte un `Converter` (si cambia, hace falta otro).
-#[derive(PartialEq)]
-struct Layout {
-    size: (u32, u32),
-    format: DXGI_FORMAT,
-    rotation: i32,
-    shape: (u32, u32),
-}
-
-impl Layout {
-    fn of(frame: &Frame) -> Self {
-        let mut d = D3D11_TEXTURE2D_DESC::default();
-        unsafe { frame.tex.GetDesc(&mut d) };
-        Layout { size: (d.Width, d.Height), format: d.Format, rotation: frame.rotation.0, shape: frame.shape }
-    }
-}
-
 pub struct Converter {
-    layout: Layout,
+    /// La imagen que convierte (si `Capture` cambia de textura, hace falta otro `Converter`).
+    src: ID3D11Texture2D,
     device: ID3D11Device,
     context: ID3D11DeviceContext,
-    vdev: ID3D11VideoDevice,
     vctx: ID3D11VideoContext,
-    en: ID3D11VideoProcessorEnumerator,
     vp: ID3D11VideoProcessor,
-    /// La imagen que convierte y su vista (ver `watch`).
-    input: Option<(ID3D11Texture2D, ID3D11VideoProcessorInputView)>,
+    input: ID3D11VideoProcessorInputView,
     pool: Vec<Slot>,
     next: usize,
     /// La última conversión: de qué versión de la imagen (`Capture::version`) y en qué lugar del pool quedó.
@@ -84,15 +64,16 @@ impl Converter {
         unsafe {
             let vdev: ID3D11VideoDevice = device.cast()?;
             let vctx: ID3D11VideoContext = context.cast()?;
-            let layout = Layout::of(frame);
-            let (iw, ih) = layout.size;
+            let src = &frame.tex;
+            let mut sd = D3D11_TEXTURE2D_DESC::default();
+            src.GetDesc(&mut sd);
 
             let rate = DXGI_RATIONAL { Numerator: fps, Denominator: 1 };
             let cd = D3D11_VIDEO_PROCESSOR_CONTENT_DESC {
                 InputFrameFormat: D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE,
                 InputFrameRate: rate,
-                InputWidth: iw,
-                InputHeight: ih,
+                InputWidth: sd.Width,
+                InputHeight: sd.Height,
                 OutputFrameRate: rate,
                 OutputWidth: w,
                 OutputHeight: h,
@@ -100,6 +81,16 @@ impl Converter {
             };
             let en = vdev.CreateVideoProcessorEnumerator(&cd)?;
             let vp = vdev.CreateVideoProcessor(&en, 0)?;
+
+            let ivd = D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC {
+                FourCC: 0,
+                ViewDimension: D3D11_VPIV_DIMENSION_TEXTURE2D,
+                Anonymous: D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC_0 {
+                    Texture2D: D3D11_TEX2D_VPIV { MipSlice: 0, ArraySlice: 0 },
+                },
+            };
+            let mut input = None;
+            vdev.CreateVideoProcessorInputView(src, &en, &ivd, Some(&mut input))?;
 
             let ovd = D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC {
                 ViewDimension: D3D11_VPOV_DIMENSION_TEXTURE2D,
@@ -161,14 +152,12 @@ impl Converter {
             vctx.VideoProcessorSetOutputBackgroundColor(&vp, false, &black);
 
             Ok(Self {
-                layout,
+                src: src.clone(),
                 device: device.clone(),
                 context: context.clone(),
-                vdev,
                 vctx,
-                en,
                 vp,
-                input: None,
+                input: input.unwrap(),
                 pool,
                 next: 0,
                 last: None,
@@ -180,29 +169,7 @@ impl Converter {
     }
 
     pub fn is_for(&self, frame: &Frame) -> bool {
-        self.layout == Layout::of(frame)
-    }
-
-    /// Convierte desde `tex` (otra textura de la misma forma: Desktop Duplication puede entregar otra en cada cuadro o al
-    /// reabrirse). Falla si el procesador de video no la acepta.
-    pub fn watch(&mut self, tex: &ID3D11Texture2D) -> Result<()> {
-        if self.input.as_ref().is_some_and(|(t, _)| t == tex) {
-            return Ok(());
-        }
-        let ivd = D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC {
-            FourCC: 0,
-            ViewDimension: D3D11_VPIV_DIMENSION_TEXTURE2D,
-            Anonymous: D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC_0 { Texture2D: D3D11_TEX2D_VPIV { MipSlice: 0, ArraySlice: 0 } },
-        };
-        let mut view = None;
-        unsafe { self.vdev.CreateVideoProcessorInputView(tex, &self.en, &ivd, Some(&mut view))? };
-        self.input = Some((tex.clone(), view.ok_or_else(|| anyhow::anyhow!("sin vista de la imagen capturada"))?));
-        Ok(())
-    }
-
-    /// Ya convirtió la imagen de esa versión (`Capture::version`).
-    pub fn has(&self, version: u64) -> bool {
-        self.last.is_some_and(|(v, _)| v == version)
+        self.src == frame.tex
     }
 
     /// Pone en la fila el cuadro negro (modo "Solo juegos" sin el juego en pantalla).
@@ -254,14 +221,13 @@ impl Converter {
             self.queue.push_back((Some(i), pts));
             return Ok(());
         }
-        let Some((_, input)) = &self.input else { anyhow::bail!("sin imagen para convertir (falta `watch`)") };
         let i = self.next;
         self.next = (self.next + 1) % self.pool.len();
         let slot = &self.pool[i];
         unsafe {
             let mut streams = [D3D11_VIDEO_PROCESSOR_STREAM {
                 Enable: true.into(),
-                pInputSurface: ManuallyDrop::new(Some(input.clone())),
+                pInputSurface: ManuallyDrop::new(Some(self.input.clone())),
                 ..Default::default()
             }];
             let r = self.vctx.VideoProcessorBlt(&self.vp, &slot.view, 0, &streams);
@@ -306,18 +272,16 @@ impl Converter {
         self.queue.pop_front();
     }
 
-    /// Brillo promedio de la imagen capturada (`src`, si se puede leer: ver `Capture::readable`) y de la convertida,
-    /// para el log: muestra en qué paso se pierde la imagen si un clip sale negro o verde (verde = NV12 en ceros, sin
-    /// escribir).
-    pub fn probe(&self, src: Option<&ID3D11Texture2D>, converted: &ID3D11Texture2D) -> String {
-        let read_src = |src| self.read(src, |d, m| {
+    /// Brillo promedio de la imagen capturada y de la convertida, para el log: muestra en qué paso se
+    /// pierde la imagen si un clip sale negro o verde (verde = NV12 en ceros, sin escribir).
+    pub fn probe(&self, converted: &ID3D11Texture2D) -> String {
+        let src = self.read(&self.src, |d, m| {
             if d.Format != DXGI_FORMAT_B8G8R8A8_UNORM {
                 return format!("formato {:?}", d.Format);
             }
             let [b, g, r] = mean(d.Width / 16, d.Height / 16, |x, y, c| m.at(y * 16, x * 16 * 4 + c));
             format!("RGB medio ({r}, {g}, {b})")
         });
-        let src = src.map_or_else(|| "sin leer (Windows la estaba actualizando)".into(), read_src);
         let nv12 = self.read(converted, |d, m| {
             let [y] = mean(d.Width / 16, d.Height / 16, |x, y, _| m.at(y * 16, x * 16));
             // En NV12 el plano de color (U y V intercalados) va después de las filas de Y.

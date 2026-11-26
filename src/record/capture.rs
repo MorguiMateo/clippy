@@ -1,7 +1,6 @@
 //! Captura de un monitor con DXGI Desktop Duplication. Cuál monitor lo decide `recorder`
 //! (el del juego o, si no hay juego, el de la ventana activa) y se puede cambiar sin cortar el buffer.
-//! La imagen nunca sale de la GPU: sin cursor se convierte directo desde la de Desktop Duplication, que se retiene hasta
-//! convertirla; con cursor se copia a una textura propia para dibujarlo encima.
+//! La imagen nunca sale de la GPU: se copia a una textura propia y listo.
 //! No se inyecta nada en el juego (compatible con anticheats como Vanguard).
 
 use anyhow::{anyhow, Result};
@@ -79,19 +78,11 @@ pub struct Capture {
     /// se escala adentro sin deformarse.
     pub width: u32,
     pub height: u32,
-    /// La imagen a convertir: la de Desktop Duplication (ver `direct`) o, con cursor, la copia propia (`own`).
+    /// Es una textura nueva cuando cambia el tamaño o la rotación de la imagen.
     pub latest: Option<Frame>,
     /// Sube cada vez que cambia lo que hay en `latest` (imagen nueva o cursor): si no subió, convertirla de nuevo daría
     /// lo mismo.
     pub version: u64,
-    /// La copia propia de la imagen, donde se dibuja el cursor (None si se convierte directo).
-    own: Option<ID3D11Texture2D>,
-    /// Se retiene la imagen de Desktop Duplication (`latest`): mientras tanto Windows no la toca.
-    held: bool,
-    /// La imagen de Desktop Duplication se puede convertir directo: está en la placa (no en la memoria, como con un
-    /// monitor de otra GPU) y el procesador de video la acepta (ver `detach`).
-    direct_ok: bool,
-    in_memory: bool,
     adapter: IDXGIAdapter1,
     gpu: String,
     out: Output,
@@ -178,10 +169,6 @@ impl Capture {
                 height: out.height,
                 latest: None,
                 version: 0,
-                own: None,
-                held: false,
-                direct_ok: true,
-                in_memory: false,
                 adapter,
                 gpu: wide(&adesc.Description),
                 out,
@@ -253,16 +240,10 @@ impl Capture {
         })
     }
 
-    /// Suelta la duplicación (y la imagen que se retenía).
-    fn close(&mut self) {
-        (self.dup, self.held) = (None, false);
-    }
-
     fn open(&mut self) -> Result<()> {
-        self.close();
+        self.dup = None;
         let dup = unsafe { self.out.output.DuplicateOutput(&self.device)? };
-        let desc = unsafe { dup.GetDesc() };
-        (self.rotation, self.in_memory) = (desc.Rotation, desc.DesktopImageInSystemMemory.as_bool());
+        self.rotation = unsafe { dup.GetDesc() }.Rotation;
         self.dup = Some(dup);
         if let Some(c) = &mut self.cursor {
             c.reset();
@@ -313,7 +294,7 @@ impl Capture {
             Err(e) => {
                 // Se vuelve al monitor de antes; `poll` reabre su duplicación.
                 let failed = std::mem::replace(&mut self.out, prev);
-                self.close();
+                self.dup = None;
                 self.retry_at = 0;
                 if let Some(why) = self.removed() {
                     log(&format!(
@@ -342,8 +323,7 @@ impl Capture {
         match Cursor::new(&self.device) {
             Ok(c) => {
                 self.cursor = Some(c);
-                self.close();
-                self.retry_at = 0;
+                (self.dup, self.retry_at) = (None, 0);
                 log("cursor del mouse: se dibuja mientras no haya un juego");
             }
             Err(e) => log(&format!("cursor del mouse: no se puede dibujar ({e})")),
@@ -354,10 +334,6 @@ impl Capture {
     /// sigue grabando sin cursor.
     pub fn draw_cursor(&mut self, show: bool) {
         let (Some(c), Some(f)) = (&mut self.cursor, &self.latest) else { return };
-        // Recién prendido, hasta la próxima imagen `latest` sigue siendo la de Desktop Duplication: esa no se toca.
-        if self.own.as_ref() != Some(&f.tex) {
-            return;
-        }
         match c.draw(&self.context, f, show) {
             Ok(changed) => self.version += changed as u64,
             Err(e) => {
@@ -380,8 +356,7 @@ impl Capture {
     }
 
     /// Toma la imagen más reciente si hubo cambios (no bloquea). Devuelve `DeviceLost` si se perdió la placa.
-    /// Con `keep` no suelta la imagen que retiene (todavía no se convirtió) y no toma otra.
-    pub fn poll(&mut self, now: i64, keep: bool) -> Result<()> {
+    pub fn poll(&mut self, now: i64) -> Result<()> {
         #[cfg(feature = "devtools")]
         if test_lost(now) {
             return Err(self.lost("prueba CLIPPY_TEST_LOST", &"sin error"));
@@ -411,17 +386,6 @@ impl Capture {
             }
         }
         let dup = self.dup.clone().unwrap();
-        if self.held {
-            if keep {
-                return Ok(());
-            }
-            // Se suelta justo antes de pedir la siguiente, como recomienda Desktop Duplication: mientras se retiene,
-            // Windows no copia en ella los cambios del escritorio.
-            self.held = false;
-            unsafe {
-                let _ = dup.ReleaseFrame();
-            }
-        }
         let mut info = DXGI_OUTDUPL_FRAME_INFO::default();
         let mut res: Option<IDXGIResource> = None;
         let got = unsafe { dup.AcquireNextFrame(0, &mut info, &mut res) };
@@ -432,19 +396,16 @@ impl Capture {
                 if let Some(c) = &mut self.cursor {
                     c.update(&dup, &info);
                 }
-                let image = res.filter(|_| info.LastPresentTime != 0).map(|r| r.cast::<ID3D11Texture2D>());
-                let r = match image {
-                    Some(Ok(t)) if self.direct() => {
-                        self.take(t);
-                        Ok(())
+                let r = if info.LastPresentTime != 0 {
+                    match res {
+                        Some(res) => res.cast::<ID3D11Texture2D>().map_err(Into::into).and_then(|t| self.copy(&t)),
+                        None => Ok(()),
                     }
-                    Some(t) => t.map_err(Into::into).and_then(|t| self.copy(&t)),
-                    None => Ok(()),
+                } else {
+                    Ok(())
                 };
-                if !self.held {
-                    unsafe {
-                        let _ = dup.ReleaseFrame();
-                    }
+                unsafe {
+                    let _ = dup.ReleaseFrame();
                 }
                 self.check(r)?;
                 if info.LastPresentTime != 0 {
@@ -464,101 +425,50 @@ impl Capture {
                 } else {
                     log(&format!("duplicación de {}: {e}", self.out.name));
                 }
-                self.close();
+                self.dup = None;
                 self.retry_at = now;
             }
         }
         Ok(())
     }
 
-    /// Se convierte directo la imagen de Desktop Duplication, sin copiarla: ahorra en la placa una copia entera de la
-    /// pantalla por cuadro. Con cursor no, porque se dibuja sobre la imagen.
-    fn direct(&self) -> bool {
-        self.direct_ok && !self.in_memory && self.cursor.is_none()
-    }
-
-    /// La imagen se puede leer: es la copia propia o la de Desktop Duplication mientras se retiene (suelta, Windows
-    /// puede estar escribiéndola).
-    pub fn readable(&self) -> Option<&ID3D11Texture2D> {
-        self.latest.as_ref().map(|f| &f.tex).filter(|t| self.held || self.own.as_ref() == Some(*t))
-    }
-
-    /// El procesador de video no aceptó la imagen de Desktop Duplication (`why`): en esta sesión se copia, como con el
-    /// cursor. La que se retiene pasa a la copia propia y se suelta.
-    pub fn detach(&mut self, why: anyhow::Error) -> Result<()> {
-        if !self.direct() {
-            return Err(why);
-        }
-        log(&format!("no se puede convertir directo la imagen de {} ({why}): se copia", self.out.name));
-        self.direct_ok = false;
-        let Some(tex) = self.latest.as_ref().map(|f| f.tex.clone()).filter(|_| self.held) else { return Ok(()) };
-        let r = self.copy(&tex);
-        if let Some(dup) = &self.dup {
-            unsafe {
-                let _ = dup.ReleaseFrame();
-            }
-        }
-        self.held = false;
-        r
-    }
-
-    /// Cómo se ve la imagen `d` en el monitor: girada y, con resolución estirada, a la forma del panel. Lo avisa en el
-    /// log cuando cambia y queda estirada.
-    fn shape(&self, d: &D3D11_TEXTURE2D_DESC) -> (u32, u32) {
-        let turned = matches!(self.rotation, DXGI_MODE_ROTATION_ROTATE90 | DXGI_MODE_ROTATION_ROTATE270);
-        let image = if turned { (d.Height, d.Width) } else { (d.Width, d.Height) };
-        let shape = self.stretch.unwrap_or(image);
-        let before = self.latest.as_ref().map(|f| (f.rotation, f.shape, desc(&f.tex).Width, desc(&f.tex).Height));
-        if before != Some((self.rotation, shape, d.Width, d.Height)) && shape.0 as u64 * image.1 as u64 != shape.1 as u64 * image.0 as u64 {
-            log(&format!("{} a {}x{}: estirado a la forma del monitor ({}x{})", self.out.name, image.0, image.1, shape.0, shape.1));
-        }
-        shape
-    }
-
-    /// Retiene la imagen de Desktop Duplication para convertirla directo (se suelta en el próximo `poll`).
-    fn take(&mut self, frame: ID3D11Texture2D) {
-        let shape = self.shape(&desc(&frame));
-        self.latest = Some(Frame { tex: frame, rotation: self.rotation, shape });
-        // La copia propia ya no hace falta: se libera su memoria de video.
-        self.own = None;
-        self.held = true;
-        self.version += 1;
-    }
-
-    /// Copia la imagen a la textura propia (para dibujar el cursor encima).
     fn copy(&mut self, frame: &ID3D11Texture2D) -> Result<()> {
-        let mut d = desc(frame);
-        let shape = self.shape(&d);
-        let fits = self.own.as_ref().is_some_and(|t| {
-            let l = desc(t);
-            (l.Width, l.Height, l.Format) == (d.Width, d.Height, d.Format)
-        });
-        if !fits {
-            d.MipLevels = 1;
-            d.ArraySize = 1;
-            d.Usage = D3D11_USAGE_DEFAULT;
-            d.BindFlags = (D3D11_BIND_RENDER_TARGET.0 | D3D11_BIND_SHADER_RESOURCE.0) as u32;
-            d.CPUAccessFlags = 0;
-            d.MiscFlags = 0;
-            let mut t = None;
-            unsafe { self.device.CreateTexture2D(&d, None, Some(&mut t))? };
-            self.own = Some(t.ok_or_else(|| anyhow!("sin textura de captura"))?);
-        }
-        let tex = self.own.clone().unwrap();
-        unsafe { self.context.CopyResource(&tex, frame) };
-        self.latest = Some(Frame { tex, rotation: self.rotation, shape });
-        self.version += 1;
-        if let Some(c) = &mut self.cursor {
-            c.forget();
+        unsafe {
+            let mut d = D3D11_TEXTURE2D_DESC::default();
+            frame.GetDesc(&mut d);
+            let turned = matches!(self.rotation, DXGI_MODE_ROTATION_ROTATE90 | DXGI_MODE_ROTATION_ROTATE270);
+            let image = if turned { (d.Height, d.Width) } else { (d.Width, d.Height) };
+            let shape = self.stretch.unwrap_or(image);
+            let fits = self.latest.as_ref().is_some_and(|f| {
+                let mut l = D3D11_TEXTURE2D_DESC::default();
+                f.tex.GetDesc(&mut l);
+                (f.rotation, f.shape) == (self.rotation, shape) && (l.Width, l.Height, l.Format) == (d.Width, d.Height, d.Format)
+            });
+            if !fits {
+                d.MipLevels = 1;
+                d.ArraySize = 1;
+                d.Usage = D3D11_USAGE_DEFAULT;
+                d.BindFlags = (D3D11_BIND_RENDER_TARGET.0 | D3D11_BIND_SHADER_RESOURCE.0) as u32;
+                d.CPUAccessFlags = 0;
+                d.MiscFlags = 0;
+                let mut t = None;
+                self.device.CreateTexture2D(&d, None, Some(&mut t))?;
+                let tex = t.ok_or_else(|| anyhow!("sin textura de captura"))?;
+                if shape.0 as u64 * image.1 as u64 != shape.1 as u64 * image.0 as u64 {
+                    log(&format!("{} a {}x{}: estirado a la forma del monitor ({}x{})", self.out.name, image.0, image.1, shape.0, shape.1));
+                }
+                self.latest = Some(Frame { tex, rotation: self.rotation, shape });
+            }
+            if let Some(f) = &self.latest {
+                self.context.CopyResource(&f.tex, frame);
+                self.version += 1;
+                if let Some(c) = &mut self.cursor {
+                    c.forget();
+                }
+            }
         }
         Ok(())
     }
-}
-
-fn desc(t: &ID3D11Texture2D) -> D3D11_TEXTURE2D_DESC {
-    let mut d = D3D11_TEXTURE2D_DESC::default();
-    unsafe { t.GetDesc(&mut d) };
-    d
 }
 
 /// Prueba (CLIPPY_TEST_LOST=<segundos>): a esos segundos de grabar se pierde la placa, una sola vez, como en un
