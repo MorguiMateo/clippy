@@ -566,9 +566,9 @@ impl EditorApp {
         let name = name.trim();
         if !library::folder_name_ok(name) {
             return Err(tr!(
-                "Ese nombre no sirve: no puede llevar < > : \" / \\ | ? * ni terminar en punto.",
-                "That name won't work: it can't contain < > : \" / \\ | ? * or end with a period.",
-                "Esse nome não serve: não pode ter < > : \" / \\ | ? * nem terminar com ponto."
+                "Ese nombre no sirve: no puede llevar < > : \" / \\ | ? *, terminar en punto ni ser uno que Windows reserva (CON, NUL, COM1…).",
+                "That name won't work: it can't contain < > : \" / \\ | ? *, end with a period, or be one Windows reserves (CON, NUL, COM1…).",
+                "Esse nome não serve: não pode ter < > : \" / \\ | ? *, terminar com ponto nem ser um que o Windows reserva (CON, NUL, COM1…)."
             )
             .into());
         }
