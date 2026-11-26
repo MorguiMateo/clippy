@@ -518,21 +518,39 @@ pub fn rename_folder(from: &Path, to: &Path) -> std::io::Result<Vec<(PathBuf, Pa
         .collect())
 }
 
-/// Un nombre de carpeta que Windows acepta: sin caracteres prohibidos ni puntos o espacios al final.
+/// Un nombre de carpeta que Windows acepta: sin caracteres prohibidos, puntos o espacios al final ni nombres
+/// reservados.
 pub fn folder_name_ok(name: &str) -> bool {
     let n = name.trim();
-    !n.is_empty() && !n.ends_with('.') && !n.chars().any(|c| BAD_NAME.contains(c) || c.is_control())
+    !n.is_empty() && !n.ends_with('.') && !n.chars().any(|c| BAD_NAME.contains(c) || c.is_control()) && !reserved(n)
 }
 
-/// `name` como nombre de archivo o carpeta que Windows acepta: los caracteres prohibidos pasan a "_" y se
-/// sacan los espacios y puntos de los bordes. Puede quedar vacío.
+/// `name` como nombre de archivo o carpeta que Windows acepta: los caracteres prohibidos pasan a "_", se sacan
+/// los espacios y puntos de los bordes, se corta en `NAME_MAX` caracteres y a los nombres reservados ("CON",
+/// "NUL.mp4") se les suma "_" antes del primer punto. Puede quedar vacío.
 pub fn clean_name(name: &str) -> String {
+    let edge = |c: char| c == '.' || c.is_whitespace();
     let s: String = name.chars().map(|c| if BAD_NAME.contains(c) || c.is_control() { '_' } else { c }).collect();
-    s.trim_matches(|c: char| c == '.' || c.is_whitespace()).to_string()
+    let mut s: String = s.trim_matches(edge).chars().take(NAME_MAX).collect();
+    s.truncate(s.trim_end_matches(edge).len());
+    if reserved(&s) {
+        // Antes de la extensión: "NUL_.mp4" ya no es reservado, "NUL.mp4_" sí.
+        s.insert(s.find('.').unwrap_or(s.len()), '_');
+    }
+    s
+}
+
+/// Windows reserva estos nombres para dispositivos, con o sin extensión: "CON", "nul.mp4", "COM1".
+fn reserved(name: &str) -> bool {
+    let stem = name.split('.').next().unwrap_or("").trim_end().to_ascii_uppercase();
+    let numbered = |prefix: &str| stem.strip_prefix(prefix).is_some_and(|n| n.len() == 1 && n.as_bytes()[0].is_ascii_digit());
+    matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL") || numbered("COM") || numbered("LPT")
 }
 
 /// Caracteres que Windows no deja usar en un nombre de archivo o carpeta.
 const BAD_NAME: &str = "<>:\"/\\|?*";
+/// Largo máximo de un nombre: deja lugar a la carpeta de clips, " (2).mp4" y los 260 caracteres de una ruta.
+const NAME_MAX: usize = 80;
 
 /// "Clippy_2026-11-15_23-38-30" -> "15/11 · 23:38:30" (en inglés, "11/15 · 23:38:30")
 pub fn pretty_name(p: &Path) -> String {

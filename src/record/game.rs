@@ -1,11 +1,13 @@
 //! Qué es "el juego": el proceso de la ventana activa que ocupa todo su monitor
-//! (pantalla completa o ventana sin bordes), salvo programas que no son juegos.
+//! (pantalla completa o ventana sin bordes), salvo programas que no son juegos: los de la carpeta de Windows
+//! (una consola o el explorador a pantalla completa) y los de `NOT_GAMES`.
 //! Lo usan la elección del monitor a grabar, el modo "Solo juegos" (imagen del clip), la carpeta del clip y el
 //! canal de audio "Juego". Una vez detectado queda fijo mientras siga abierto, aunque hagas Alt+Tab.
 
 use windows::core::{w, HSTRING, PWSTR};
 use windows::Win32::Foundation::{CloseHandle, HANDLE, HWND, RECT};
 use windows::Win32::Storage::FileSystem::{GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW};
+use windows::Win32::System::SystemInformation::GetSystemWindowsDirectoryW;
 use windows::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
 };
@@ -17,14 +19,14 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetClassNameW, GetForegroundWindow, GetWindowRect, GetWindowThreadProcessId, IsIconic, IsWindow, IsZoomed,
 };
 
-/// Programas que pueden estar en pantalla completa sin ser juegos (en minúsculas, sin ".exe").
+/// Programas fuera de la carpeta de Windows que pueden estar en pantalla completa sin ser juegos (en minúsculas,
+/// sin ".exe"). Los de adentro (explorador, consolas, menú Inicio, pantalla de bloqueo) no hace falta listarlos.
 const NOT_GAMES: &[&str] = &[
     "chrome", "msedge", "firefox", "opera", "brave", "vivaldi",
     "vlc", "mpc-hc", "mpc-hc64", "mpc-be", "mpc-be64", "mpv", "potplayer", "potplayer64", "potplayermini", "potplayermini64",
-    "microsoft.media.player", "video.ui", "wmplayer",
-    "explorer", "applicationframehost", "powerpnt", "lockapp", "searchhost", "startmenuexperiencehost", "shellexperiencehost",
+    "microsoft.media.player", "video.ui", "wmplayer", "powerpnt", "windowsterminal",
     // Herramientas de captura de pantalla: tapan todo el monitor mientras elegís qué recortar.
-    "snippingtool", "screenclippinghost", "lightshot", "sharex", "greenshot", "snagitcapture", "snagit32",
+    "snippingtool", "lightshot", "sharex", "greenshot", "snagitcapture", "snagit32",
     "flameshot", "snipaste", "gyazo", "gyazowin", "picpick", "screenpresso",
     "clippy",
 ];
@@ -35,7 +37,7 @@ const STILL_ACTIVE: u32 = 259;
 
 struct Proc {
     pid: u32,
-    /// El ProductName del ejecutable (ej. "VALORANT") o, si no tiene, su nombre sin ".exe".
+    /// Nombre del juego para mostrar y para su carpeta de clips (ver `display_name`).
     name: String,
     handle: HANDLE,
     /// Última ventana del juego que estuvo adelante en pantalla completa (dice en qué monitor está).
@@ -184,10 +186,10 @@ fn open_game(pid: u32, window: HWND) -> Option<Proc> {
             exe_name(pid)?
         };
         let exe = exe_stem(&path);
-        if !is_game(&exe) {
+        if !is_game(&exe) || in_windows_dir(&path) {
             return None;
         }
-        p.name = product_name(&path).unwrap_or(exe);
+        p.name = display_name(&path).unwrap_or(exe);
         Some(p)
     }
 }
@@ -201,37 +203,70 @@ fn exe_stem(path: &str) -> String {
     }
 }
 
-/// ProductName del ejecutable: el nombre del juego tal como lo publica, sin una lista para cada uno.
-fn product_name(path: &str) -> Option<String> {
-    if !std::path::Path::new(path).is_absolute() {
-        return None;
+/// El exe está adentro de la carpeta de Windows (System32, SysWOW64, SystemApps, WinSxS…): es parte del sistema,
+/// no un juego. La carpeta se le pregunta a Windows; `path` viene de `QueryFullProcessImageNameW`, con la ruta
+/// completa. Si el nombre salió de la lista de procesos no hay ruta y no se puede saber.
+fn in_windows_dir(path: &str) -> bool {
+    let mut buf = [0u16; 260];
+    let n = unsafe { GetSystemWindowsDirectoryW(Some(&mut buf)) } as usize;
+    if n == 0 || n > buf.len() {
+        return false;
     }
-    unsafe {
-        let path = HSTRING::from(path);
-        let size = GetFileVersionInfoSizeW(&path, None);
-        if size == 0 {
+    let dir = String::from_utf16_lossy(&buf[..n]).trim_end_matches('\\').to_lowercase();
+    path.to_lowercase().strip_prefix(&dir).is_some_and(|rest| rest.starts_with('\\'))
+}
+
+/// El nombre que el juego publica en su exe, sin una lista para cada uno: el ProductName (ej. "VALORANT") o, si no
+/// tiene o es el de Windows ("Microsoft® Windows® Operating System", que cambia según el idioma pero siempre dice
+/// "Windows®"), la FileDescription. None si no trae ninguno.
+fn display_name(path: &str) -> Option<String> {
+    let info = VersionInfo::read(path)?;
+    info.get("ProductName").filter(|n| !n.contains("Windows®") && !n.contains("Windows(R)")).or_else(|| info.get("FileDescription"))
+}
+
+/// Recurso de versión de un exe (lo que muestra Propiedades > Detalles).
+struct VersionInfo {
+    data: Vec<u64>,
+    /// (idioma, página de códigos) de cada tabla de textos.
+    translations: Vec<[u16; 2]>,
+}
+
+impl VersionInfo {
+    fn read(path: &str) -> Option<Self> {
+        if !std::path::Path::new(path).is_absolute() {
             return None;
         }
-        let mut data = vec![0u64; (size as usize).div_ceil(8)];
-        GetFileVersionInfoW(&path, 0, size, data.as_mut_ptr().cast()).ok()?;
-        let block = data.as_ptr().cast();
-        let mut value = std::ptr::null_mut();
-        let mut len = 0;
-        if !VerQueryValueW(block, w!("\\VarFileInfo\\Translation"), &mut value, &mut len).as_bool() || value.is_null() {
-            return None;
-        }
-        let translations = std::slice::from_raw_parts(value.cast::<u16>(), len as usize / 2);
-        for t in translations.as_chunks::<2>().0 {
-            let key = HSTRING::from(format!("\\StringFileInfo\\{:04x}{:04x}\\ProductName", t[0], t[1]));
-            if VerQueryValueW(block, &key, &mut value, &mut len).as_bool() && !value.is_null() && len > 1 {
-                let name = String::from_utf16_lossy(std::slice::from_raw_parts(value.cast::<u16>(), len as usize));
-                let name = name.trim_matches('\0').trim();
-                if !name.is_empty() {
-                    return Some(name.into());
-                }
+        unsafe {
+            let path = HSTRING::from(path);
+            let size = GetFileVersionInfoSizeW(&path, None);
+            if size == 0 {
+                return None;
             }
+            let mut data = vec![0u64; (size as usize).div_ceil(8)];
+            GetFileVersionInfoW(&path, 0, size, data.as_mut_ptr().cast()).ok()?;
+            let mut value = std::ptr::null_mut();
+            let mut len = 0;
+            if !VerQueryValueW(data.as_ptr().cast(), w!("\\VarFileInfo\\Translation"), &mut value, &mut len).as_bool() || value.is_null() {
+                return None;
+            }
+            let translations = std::slice::from_raw_parts(value.cast::<u16>(), len as usize / 2).as_chunks::<2>().0.to_vec();
+            Some(Self { data, translations })
         }
-        None
+    }
+
+    /// El texto `key` (ej. "ProductName") de la primera tabla que lo tenga, sin espacios de más. None si está vacío.
+    fn get(&self, key: &str) -> Option<String> {
+        self.translations.iter().find_map(|t| unsafe {
+            let key = HSTRING::from(format!("\\StringFileInfo\\{:04x}{:04x}\\{key}", t[0], t[1]));
+            let mut value = std::ptr::null_mut();
+            let mut len = 0;
+            if !VerQueryValueW(self.data.as_ptr().cast(), &key, &mut value, &mut len).as_bool() || value.is_null() || len <= 1 {
+                return None;
+            }
+            let text = String::from_utf16_lossy(std::slice::from_raw_parts(value.cast::<u16>(), len as usize));
+            let text = text.trim_matches('\0').trim();
+            (!text.is_empty()).then(|| text.to_string())
+        })
     }
 }
 
