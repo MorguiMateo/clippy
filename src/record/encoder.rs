@@ -38,7 +38,7 @@ pub struct Bytes {
 }
 
 impl Bytes {
-    fn own(data: Vec<u8>) -> Bytes {
+    pub(super) fn own(data: Vec<u8>) -> Bytes {
         let end = data.len();
         Bytes { block: Arc::new(data), start: 0, end }
     }

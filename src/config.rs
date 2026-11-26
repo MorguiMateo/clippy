@@ -98,8 +98,6 @@ pub const MIN_SECONDS: u32 = 5;
 pub const MAX_SECONDS: u32 = 600;
 /// Parte de la RAM total que puede ocupar el buffer en el peor caso (1/4).
 const RAM_SHARE: u64 = 4;
-/// Audio en crudo de cada canal en el buffer (bytes por segundo).
-const AUDIO_BYTES_PER_SEC: u64 = 192_000;
 /// Calidad de video (Mbps) que se puede elegir a mano en "Personalizada".
 pub const MIN_MBPS: u32 = 5;
 pub const MAX_MBPS: u32 = 150;
@@ -290,11 +288,10 @@ impl Config {
     }
 
     /// RAM aproximada mientras graba (MB), como la muestra el Administrador de tareas: la app en sí
-    /// (unos 40 MB), el audio en crudo y el video. El encoder casi nunca llega al bitrate elegido
+    /// (unos 40 MB), el audio (una pista AAC) y el video. El encoder casi nunca llega al bitrate elegido
     /// (solo con mucho movimiento), así que se cuenta una décima parte: da un número realista, no el máximo.
     pub fn typical_ram_mb(&self) -> u32 {
-        let channels = self.game_audio as u32 + self.desktop_audio as u32 + self.mic_audio as u32;
-        let audio = channels * self.seconds * (AUDIO_BYTES_PER_SEC / 1000) as u32 / 1000;
+        let audio = self.audio_on() as u32 * self.seconds * crate::mf::AAC_BYTES_PER_SECOND / 1_000_000;
         let video = self.codec.bitrate(self.bitrate_mbps) / 1_000_000 * self.seconds / 80;
         (40 + audio + video).div_ceil(10) * 10
     }
@@ -303,8 +300,8 @@ impl Config {
     /// llegue al bitrate completo (todo en movimiento), el buffer no pasa de un cuarto de la RAM. Se cuenta como
     /// H.264 aunque se elija H.265: si la placa no lo tiene, se graba en H.264.
     pub fn max_seconds(&self) -> u32 {
-        // Se cuentan los tres canales de audio: así prender el micrófono no recorta la duración.
-        let per_sec = self.bitrate_mbps as u64 * 125_000 + 3 * AUDIO_BYTES_PER_SEC;
+        // El audio va en el buffer ya comprimido, en una sola pista (los canales se mezclan mientras se graba).
+        let per_sec = self.bitrate_mbps as u64 * 125_000 + crate::mf::AAC_BYTES_PER_SECOND as u64;
         let secs = (total_ram() / RAM_SHARE / per_sec).min(MAX_SECONDS as u64) as u32;
         (secs / 5 * 5).max(MIN_SECONDS)
     }

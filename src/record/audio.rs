@@ -5,7 +5,8 @@
 //!
 //! Se captura en el formato del dispositivo (float, con sus canales) y Clippy lo baja a estéreo:
 //! la conversión de Windows de 5.1/7.1 a estéreo atenúa el sonido 10 dB o más.
-//! Se guarda en RAM como PCM 48 kHz estéreo y se mezcla/comprime a AAC recién al guardar.
+//! Cada canal queda como PCM 48 kHz estéreo solo hasta que se mezcla (`track`, un cuarto de segundo detrás del
+//! presente): lo que guarda el buffer del clip ya es AAC.
 //!
 //! Cada captura lee sus paquetes en un hilo propio apenas llegan (cada 10 ms). La captura por proceso guarda
 //! muy poco audio: leída desde el hilo de video, a 30 fps (cada 33 ms) Windows tiraba paquetes sin avisar y
@@ -417,9 +418,7 @@ impl DefaultOutput {
 /// Frames por bloque de sonido: se cierran de a un segundo.
 const BLOCK: usize = RATE as usize;
 
-/// Un tramo del buffer: silencio (solo cuánto dura) o sonido (PCM estéreo intercalado, que no se modifica más: al
-/// guardar un clip se comparte sin copiarlo).
-#[derive(Clone)]
+/// Un tramo del buffer: silencio (solo cuánto dura) o sonido (PCM estéreo intercalado, que no se modifica más).
 enum Block {
     Silence(usize),
     Sound(Arc<[i16]>),
@@ -434,9 +433,9 @@ impl Block {
     }
 }
 
-/// Buffer de audio de un canal (PCM estéreo de 48 kHz) en bloques: el silencio no ocupa memoria y descartar lo viejo
-/// suelta bloques enteros. Las posiciones son frames desde t0.
-#[derive(Default, Clone)]
+/// Buffer de audio de un canal (PCM estéreo de 48 kHz) en bloques, hasta que se mezcla: el silencio no ocupa memoria y
+/// descartar lo viejo suelta bloques enteros. Las posiciones son frames desde t0.
+#[derive(Default)]
 pub struct AudioBuf {
     /// Dónde empieza lo guardado.
     start: i64,

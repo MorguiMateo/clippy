@@ -1,5 +1,5 @@
 //! Media Foundation compartido y el formato de audio de toda la app (PCM de 16 bits, estéreo, 48 kHz):
-//! así lo graba la grabadora, así se mezcla y comprime a AAC al guardar y así lo lee el editor.
+//! así lo captura y mezcla la grabadora (y lo comprime a AAC mientras graba) y así lo lee el editor.
 
 use anyhow::Result;
 use windows::Win32::Media::Audio::{WAVEFORMATEX, WAVE_FORMAT_PCM};
@@ -11,7 +11,7 @@ pub const RATE: i64 = 48_000;
 /// Bytes de una muestra estéreo (dos canales de 16 bits).
 pub const FRAME_BYTES: usize = 4;
 /// AAC de los clips y las exportaciones: 192 kbps.
-const AAC_BYTES_PER_SECOND: u32 = 24_000;
+pub const AAC_BYTES_PER_SECOND: u32 = 24_000;
 
 /// El formato de audio de Clippy para WASAPI (Windows convierte el del dispositivo a este).
 pub const WAVE_FORMAT: WAVEFORMATEX = WAVEFORMATEX {

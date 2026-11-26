@@ -65,7 +65,8 @@ pub struct Rec {
     pub enc_lat_max_ms: f64,
 }
 
-/// Un clip guardado: cuánto se frenó la grabación, cuánto tardó la mezcla del audio y cuánto la escritura del MP4 (ms).
+/// Un clip guardado: cuánto se frenó la grabación, cuánto de eso fue completar la pista de audio hasta el final del clip
+/// (mezclar y comprimir lo que faltaba) y cuánto tardó la escritura del MP4 (ms).
 #[derive(Clone, Serialize)]
 pub struct Save {
     pub held_ms: u64,

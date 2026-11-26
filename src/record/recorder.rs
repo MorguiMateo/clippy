@@ -15,12 +15,13 @@ use super::capture::{Aim, Capture, DeviceLost};
 use super::clock::{now_100ns, Timer};
 use super::convert::Converter;
 use super::encoder::{Bytes, Device, Encoder, Packet};
+use super::track::{self, Input, Track};
 use super::{game, mux};
 use crate::i18n::tr;
 use crate::config::{CaptureMode, Config};
 use crate::editor::library::clean_name;
 use crate::log::{file_stamp, log};
-use crate::mf::{frames_at, Mf};
+use crate::mf::{frames_at, time_of, Mf};
 use crate::ui_kit::sound;
 
 pub enum Cmd {
@@ -221,6 +222,15 @@ struct AudioState {
     next_check: i64,
     /// Ventanas (100 ns) donde sonó el aviso de "clip guardado": se silencian en el canal escritorio.
     masks: Vec<(i64, i64)>,
+    /// La pista de los clips, mezclada y comprimida mientras se graba (None con el audio apagado).
+    track: Option<Track>,
+    /// Si no se pudo abrir el encoder de audio, desde cuándo se reintenta.
+    track_retry: i64,
+}
+
+/// Un canal prendido, con su volumen, para la mezcla.
+fn input(on: bool, c: &Channel, volume: u32, masked: bool) -> Option<Input<'_>> {
+    on.then(|| Input { buf: &c.buf, gain: volume as f32 / 100.0, masked })
 }
 
 impl AudioState {
@@ -245,6 +255,48 @@ impl AudioState {
         };
         let on = cfg.desktop_audio;
         self.desktop.sync(on.then_some(desk), fallback.filter(|_| on), now, "escritorio");
+    }
+
+    /// Pasa a cada canal lo que llegó de su captura.
+    fn poll(&mut self, t0: i64) {
+        self.game_ch.poll(t0);
+        self.desktop.poll(t0);
+        self.mic.poll(t0);
+    }
+
+    /// Mezcla y comprime la pista de los clips hasta el frame `to` y suelta de los canales lo que ya se mezcló.
+    fn advance(&mut self, cfg: &Config, to: i64, now: i64) {
+        // Si el hilo estuvo frenado más que el buffer entero (la PC se suspendió), no se comprime ese silencio: se
+        // empieza una pista nueva.
+        let stalled = frames_at(cfg.seconds as i64 * 10_000_000 + 20_000_000);
+        if !cfg.audio_on() || self.track.as_ref().is_some_and(|t| to - t.pos() > stalled) {
+            self.track = None;
+        } else if self.track.is_none() && now >= self.track_retry {
+            match Track::new(to.max(0)) {
+                Ok(t) => self.track = Some(t),
+                Err(e) => {
+                    log(&format!("no se pudo abrir el encoder de audio: {e:?}"));
+                    self.track_retry = now + AUDIO_RETRY;
+                }
+            }
+        }
+        if let Some(t) = &mut self.track {
+            let inputs = [
+                input(cfg.game_audio, &self.game_ch, cfg.game_volume, false),
+                input(cfg.mic_audio, &self.mic, cfg.mic_volume, false),
+                input(cfg.desktop_audio, &self.desktop, cfg.desktop_volume, true),
+            ];
+            if let Err(e) = t.advance(to, &inputs, &self.masks) {
+                log(&format!("no se pudo comprimir el audio: {e:?}"));
+                self.track = None;
+                self.track_retry = now + AUDIO_RETRY;
+            }
+        }
+        let done = self.track.as_ref().map_or(to, |t| t.pos());
+        for c in [&mut self.game_ch, &mut self.desktop, &mut self.mic] {
+            c.buf.trim_before(done);
+        }
+        self.masks.retain(|m| m.1 > time_of(done));
     }
 }
 
@@ -316,6 +368,8 @@ fn session(
         output: audio::DefaultOutput::new(),
         next_check: 0,
         masks: Vec::new(),
+        track: None,
+        track_retry: 0,
     };
     notify(Event::Game(au.game.name()));
     let mut game_monitor = target.monitor;
@@ -340,7 +394,9 @@ fn session(
                 Ok(Cmd::Stop) | Err(TryRecvError::Disconnected) => return Ok(End::Stop),
                 Ok(Cmd::Save) => {
                     let now = now_100ns() - t0;
-                    if save_clip(cfg, &packets, &enc, &au, now, frame_dur, notify) && cfg.sound_on_save {
+                    // Lo último que llegó de cada captura, para completar la pista hasta el final del clip.
+                    au.poll(t0);
+                    if save_clip(cfg, &packets, &enc, &mut au, now, frame_dur, notify) && cfg.sound_on_save {
                         sound::play_saved();
                         au.masks.push((now, now + sound::SAVED_LEN + SOUND_LATENCY));
                     }
@@ -409,9 +465,7 @@ fn session(
             }
         }
         au.sync(cfg, now);
-        au.game_ch.poll(t0);
-        au.desktop.poll(t0);
-        au.mic.poll(t0);
+        au.poll(t0);
 
         cap.check(enc.poll(&mut out))?;
         #[cfg(feature = "devtools")]
@@ -481,17 +535,16 @@ fn session(
         }
 
         trim_video(&mut packets, now - keep);
-        let a_min = frames_at(now - keep - 20_000_000);
-        au.game_ch.buf.trim_before(a_min);
-        au.desktop.buf.trim_before(a_min);
-        au.mic.buf.trim_before(a_min);
-        au.masks.retain(|m| m.1 > now - keep - 20_000_000);
+        au.advance(cfg, frames_at(now) - track::LAG, now);
+        if let Some(t) = &mut au.track {
+            t.trim_before(now - keep - 20_000_000);
+        }
 
         #[cfg(feature = "devtools")]
         perf.end(now, now_100ns() - woke, fps, || {
             let mb = |b: usize| b as f64 / 1_048_576.0;
             let video = packets.iter().map(|p| p.data.len()).sum();
-            let audio = au.game_ch.buf.bytes() + au.desktop.buf.bytes() + au.mic.buf.bytes();
+            let audio = au.game_ch.buf.bytes() + au.desktop.buf.bytes() + au.mic.buf.bytes() + au.track.as_ref().map_or(0, |t| t.bytes());
             (mb(video), packets.len(), mb(audio))
         });
         timer.sleep(next_frame - (now_100ns() - t0));
@@ -525,73 +578,8 @@ fn trim_video(p: &mut VecDeque<Packet>, min_pts: i64) {
     }
 }
 
-/// El audio de un clip, para mezclarlo en el hilo que lo guarda (no en el de grabación, que se frenaría al apretar la
-/// tecla): cada canal prendido con su volumen. Los canales comparten los bloques del buffer, sin copiar el sonido.
-struct Mix {
-    from: i64,
-    to: i64,
-    game: Option<(AudioBuf, f32)>,
-    mic: Option<(AudioBuf, f32)>,
-    desktop: Option<(AudioBuf, f32)>,
-    /// Donde sonó el aviso de guardado: se silencia en escritorio.
-    masks: Vec<(i64, i64)>,
-}
-
-impl Mix {
-    fn new(cfg: &Config, au: &AudioState, from: i64, to: i64) -> Self {
-        let channel = |on: bool, c: &Channel, volume: u32| on.then(|| (c.buf.clone(), volume as f32 / 100.0));
-        Mix {
-            from,
-            to,
-            game: channel(cfg.game_audio, &au.game_ch, cfg.game_volume),
-            mic: channel(cfg.mic_audio, &au.mic, cfg.mic_volume),
-            desktop: channel(cfg.desktop_audio, &au.desktop, cfg.desktop_volume),
-            masks: au.masks.clone(),
-        }
-    }
-
-    /// Mezcla juego, micrófono y escritorio, por tramos cortos.
-    fn run(&self) -> Vec<i16> {
-        const CHUNK: usize = 4096; // frames por tramo
-        let from = self.from;
-        let n = (self.to - from).max(0) as usize;
-        // Partes del canal escritorio donde no sonó el aviso de guardado (los avisos ya están en orden).
-        let frame = |t: i64| ((frames_at(t) - from).max(0) as usize).min(n);
-        let mut desktop = Vec::new();
-        let mut at = 0;
-        for (a, b) in self.masks.iter().map(|&(a, b)| (frame(a), frame(b))).chain([(n, n)]) {
-            if a > at {
-                desktop.push((at, a));
-            }
-            at = at.max(b);
-        }
-
-        let mut out = Vec::with_capacity(n * 2);
-        let mut buf = [0f32; CHUNK * 2];
-        for c0 in (0..n).step_by(CHUNK) {
-            let c1 = (c0 + CHUNK).min(n);
-            let mix = &mut buf[..(c1 - c0) * 2];
-            mix.fill(0.0);
-            let f = from + c0 as i64;
-            for (b, gain) in [&self.game, &self.mic].into_iter().flatten() {
-                b.mix_into(mix, f, *gain);
-            }
-            if let Some((b, gain)) = &self.desktop {
-                for &(a, z) in &desktop {
-                    let (a, z) = (a.max(c0), z.min(c1));
-                    if a < z {
-                        b.mix_into(&mut mix[(a - c0) * 2..(z - c0) * 2], from + a as i64, *gain);
-                    }
-                }
-            }
-            out.extend(mix.iter().map(|x| x.clamp(i16::MIN as f32, i16::MAX as f32) as i16));
-        }
-        out
-    }
-}
-
 /// Arma el trabajo de guardado y lo lanza en otro hilo. Devuelve false si no había nada que guardar.
-fn save_clip(cfg: &Config, packets: &VecDeque<Packet>, enc: &Encoder, au: &AudioState, now: i64, frame_dur: i64, notify: &Notify) -> bool {
+fn save_clip(cfg: &Config, packets: &VecDeque<Packet>, enc: &Encoder, au: &mut AudioState, now: i64, frame_dur: i64, notify: &Notify) -> bool {
     let started = std::time::Instant::now();
     let keep = cfg.seconds as i64 * 10_000_000;
     let no_video = || tr!("todavía no hay video en el buffer", "there's no video in the buffer yet", "ainda não há vídeo no buffer");
@@ -606,11 +594,26 @@ fn save_clip(cfg: &Config, packets: &VecDeque<Packet>, enc: &Encoder, au: &Audio
         .rposition(|p| p.key && p.pts <= min)
         .or_else(|| packets.iter().position(|p| p.key));
     let Some(start) = start else { return fail(no_video()) };
+    // Comparte los bytes con el buffer (cada paquete apunta a su bloque): no copia el video.
     let pk: Vec<Packet> = packets.iter().skip(start).cloned().collect();
-    log(&format!("clip: {} cuadros, {} fotogramas clave", pk.len(), pk.iter().filter(|p| p.key).count()));
     let base = pk[0].pts;
     let end = pk.last().map_or(base, |p| p.pts) + frame_dur;
-    let audio = cfg.audio_on().then(|| Mix::new(cfg, au, frames_at(base), frames_at(end)));
+    // La pista va un poco detrás del presente: se completa ahora hasta el final del video con el audio que ya llegó.
+    let t = std::time::Instant::now();
+    au.advance(cfg, frames_at(end), now);
+    let mixed = t.elapsed();
+    let audio = au.track.as_ref().and_then(|t| t.clip(base, end));
+    let sound = audio.as_ref().map_or(String::new(), |a| {
+        let (first, last) = (&a.packets[0], &a.packets[a.packets.len() - 1]);
+        let ms = |t: i64| t as f64 / 10_000.0;
+        format!(
+            ", audio: {} paquetes AAC, de {:+.1} ms a {:+.1} ms del video",
+            a.packets.len(),
+            ms(first.pts - base),
+            ms(last.pts + time_of(super::aac::AAC_FRAME as i64) - end)
+        )
+    });
+    log(&format!("clip: {} cuadros, {} fotogramas clave{sound}", pk.len(), pk.iter().filter(|p| p.key).count()));
     if au.game.pid().is_none() {
         if cfg.game_audio {
             log("clip sin canal de juego: no se detectó ningún juego");
@@ -632,17 +635,16 @@ fn save_clip(cfg: &Config, packets: &VecDeque<Packet>, enc: &Encoder, au: &Audio
         i += 1;
     }
     let notify = notify.clone();
-    // Cuánto se frenó el hilo de grabación y cuánto tardó cada paso del guardado (lo lee tools/medir.ps1).
+    // Cuánto se frenó el hilo de grabación (incluye completar la pista de audio: "mezcla") y cuánto tardó escribir el MP4
+    // (lo lee tools/medir.ps1).
     let held = started.elapsed();
     std::thread::spawn(move || {
         let ms = |d: std::time::Duration| d.as_millis();
         let t = std::time::Instant::now();
-        let audio = audio.map(|m| m.run());
-        let mixed = t.elapsed();
         let job = mux::Job { path, video_type, packets: pk, base, frame_dur, audio };
         match mux::write(job) {
             Ok(p) => {
-                let (held, mixed, written) = (ms(held), ms(mixed), ms(t.elapsed() - mixed));
+                let (held, mixed, written) = (ms(held), ms(mixed), ms(t.elapsed()));
                 log(&format!("clip guardado: {} (grabación frenada {held} ms, mezcla {mixed} ms, MP4 {written} ms)", p.display()));
                 #[cfg(feature = "devtools")]
                 crate::perf::saved(held as u64, mixed as u64, written as u64);

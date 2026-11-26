@@ -1,5 +1,5 @@
-//! Escribe el clip a MP4 con el Sink Writer de Media Foundation.
-//! El video se copia tal cual (sin recodificar); el audio PCM se comprime a AAC.
+//! Escribe el clip a MP4 con el Sink Writer de Media Foundation. Video y audio ya vienen comprimidos (el audio lo
+//! comprime `track` mientras se graba): se copian tal cual, sin recodificar.
 
 use std::path::PathBuf;
 
@@ -7,8 +7,10 @@ use anyhow::Result;
 use windows::core::HSTRING;
 use windows::Win32::Media::MediaFoundation::*;
 
+use super::aac::AAC_FRAME;
 use super::encoder::Packet;
-use crate::mf::{self, time_of, Mf, FRAME_BYTES};
+use super::track;
+use crate::mf::{self, time_of, Mf};
 
 pub struct Job {
     pub path: PathBuf,
@@ -16,7 +18,7 @@ pub struct Job {
     pub packets: Vec<Packet>,
     pub base: i64,
     pub frame_dur: i64,
-    pub audio: Option<Vec<i16>>,
+    pub audio: Option<track::Clip>,
 }
 
 pub fn write(job: Job) -> Result<PathBuf> {
@@ -27,11 +29,29 @@ pub fn write(job: Job) -> Result<PathBuf> {
         let _ = std::fs::remove_file(&job.path);
     } else {
         // Forma de onda y fotogramas clave listos para el editor (así abre el clip al instante).
-        let wave = job.audio.as_deref().map(crate::clipcache::wave_from_pcm).unwrap_or_default();
         let kf: Vec<i64> = job.packets.iter().filter(|p| p.key).map(|p| p.pts - job.base).collect();
-        crate::clipcache::save(&job.path, &wave, &kf);
+        crate::clipcache::save(&job.path, &job.audio.map(|a| a.wave).unwrap_or_default(), &kf);
     }
     r.map(|_| job.path)
+}
+
+unsafe fn media_type(blob: &[u8]) -> Result<IMFMediaType> {
+    let t = MFCreateMediaType()?;
+    MFInitAttributesFromBlob(&t, blob)?;
+    Ok(t)
+}
+
+unsafe fn sample(p: &Packet, time: i64, dur: i64) -> Result<IMFSample> {
+    let s = mf::sample(&p.data, time, dur.max(1))?;
+    if p.key {
+        s.SetUINT32(&MFSampleExtension_CleanPoint, 1)?;
+    }
+    Ok(s)
+}
+
+/// Duración de cada paquete: hasta el siguiente (el último, `last`).
+fn durations(p: &[Packet], base: i64, last: i64) -> impl Iterator<Item = (&Packet, i64, i64)> {
+    p.iter().enumerate().map(move |(i, x)| (x, x.pts - base, p.get(i + 1).map_or(last, |n| n.pts - x.pts)))
 }
 
 fn write_inner(job: &Job) -> Result<()> {
@@ -39,9 +59,6 @@ fn write_inner(job: &Job) -> Result<()> {
         std::fs::create_dir_all(dir)?;
     }
     unsafe {
-        let vtype = MFCreateMediaType()?;
-        MFInitAttributesFromBlob(&vtype, &job.video_type)?;
-
         let mut attrs = None;
         MFCreateAttributes(&mut attrs, 2)?;
         let attrs = attrs.unwrap();
@@ -50,28 +67,26 @@ fn write_inner(job: &Job) -> Result<()> {
 
         let url = HSTRING::from(job.path.as_os_str());
         let writer = MFCreateSinkWriterFromURL(&url, None, &attrs)?;
+        let vtype = media_type(&job.video_type)?;
         let vs = writer.AddStream(&vtype)?;
         writer.SetInputMediaType(vs, &vtype, None)?;
-
-        let a_stream = if job.audio.is_some() {
-            let s = writer.AddStream(&mf::aac_type()?)?;
-            writer.SetInputMediaType(s, &mf::pcm_type()?, None)?;
-            Some(s)
-        } else {
-            None
+        let audio = match &job.audio {
+            Some(a) => {
+                let atype = media_type(&a.type_blob)?;
+                let s = writer.AddStream(&atype)?;
+                writer.SetInputMediaType(s, &atype, None)?;
+                Some((s, &a.packets[..]))
+            }
+            None => None,
         };
-
         writer.BeginWriting()?;
 
-        const CHUNK: usize = 1024; // frames de audio por muestra
-        let empty = Vec::new();
-        let audio = job.audio.as_ref().unwrap_or(&empty);
-        let total_af = audio.len() / 2;
-        let n = job.packets.len();
-        let (mut vi, mut ai) = (0usize, 0usize);
+        // En orden de tiempo, intercalados.
+        let mut video = durations(&job.packets, job.base, job.frame_dur).peekable();
+        let mut sound = audio.map(|(s, p)| (s, durations(p, job.base, time_of(AAC_FRAME as i64)).peekable()));
         loop {
-            let vt = (vi < n).then(|| job.packets[vi].pts - job.base);
-            let at = (a_stream.is_some() && ai < total_af).then(|| time_of(ai as i64));
+            let vt = video.peek().map(|v| v.1);
+            let at = sound.as_mut().and_then(|(_, a)| a.peek().map(|x| x.1));
             let write_audio = match (vt, at) {
                 (None, None) => break,
                 (Some(v), Some(a)) => a < v,
@@ -79,22 +94,12 @@ fn write_inner(job: &Job) -> Result<()> {
                 (Some(_), None) => false,
             };
             if write_audio {
-                let frames = CHUNK.min(total_af - ai);
-                let bytes = std::slice::from_raw_parts(audio[ai * 2..].as_ptr() as *const u8, frames * FRAME_BYTES);
-                let t = time_of(ai as i64);
-                let d = time_of((ai + frames) as i64) - t;
-                writer.WriteSample(a_stream.unwrap(), &mf::sample(bytes, t, d)?)?;
-                ai += frames;
+                let (s, a) = sound.as_mut().unwrap();
+                let (p, t, d) = a.next().unwrap();
+                writer.WriteSample(*s, &sample(p, t, d)?)?;
             } else {
-                let p = &job.packets[vi];
-                let t = p.pts - job.base;
-                let d = if vi + 1 < n { job.packets[vi + 1].pts - p.pts } else { job.frame_dur };
-                let s = mf::sample(&p.data, t, d.max(1))?;
-                if p.key {
-                    s.SetUINT32(&MFSampleExtension_CleanPoint, 1)?;
-                }
-                writer.WriteSample(vs, &s)?;
-                vi += 1;
+                let (p, t, d) = video.next().unwrap();
+                writer.WriteSample(vs, &sample(p, t, d)?)?;
             }
         }
         writer.Finalize()?;
