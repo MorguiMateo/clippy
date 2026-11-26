@@ -657,6 +657,10 @@ fn save_clip(cfg: &Config, packets: &VecDeque<Packet>, enc: &Encoder, au: &Audio
         notify(Event::SaveFailed(m.into()));
         false
     };
+    // En "Solo juegos" sin un juego abierto, todo el buffer es negro: no se guarda un clip vacío.
+    if cfg.capture_mode == CaptureMode::GamesOnly && au.game.pid().is_none() {
+        return fail("No game detected. In \"Games only\" mode, only a game in full screen is recorded");
+    }
     let Some(video_type) = enc.type_blob() else { return fail(no_video()) };
     let min = now - keep;
     let start = packets
@@ -672,13 +676,8 @@ fn save_clip(cfg: &Config, packets: &VecDeque<Packet>, enc: &Encoder, au: &Audio
     // que ya llegó (sin moverla) y se comprime en el hilo que guarda.
     let audio = au.track.as_ref().and_then(|t| t.clip(base, end, &inputs(cfg, &au.game_ch, &au.mic, &au.desktop), &au.masks));
     log(&format!("clip: {} cuadros, {} fotogramas clave", pk.len(), pk.iter().filter(|p| p.key).count()));
-    if au.game.pid().is_none() {
-        if cfg.game_audio {
-            log("clip sin canal de juego: no se detectó ningún juego");
-        }
-        if cfg.capture_mode == CaptureMode::GamesOnly {
-            log("clip en negro: el modo \"Solo juegos\" no detectó ningún juego en pantalla completa");
-        }
+    if au.game.pid().is_none() && cfg.game_audio {
+        log("clip sin canal de juego: no se detectó ningún juego");
     }
 
     // Mientras el juego esté abierto, sus clips van a una carpeta con su nombre adentro de la de los clips (aunque se
