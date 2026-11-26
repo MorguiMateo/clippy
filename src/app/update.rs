@@ -14,7 +14,8 @@ use serde::{Deserialize, Serialize};
 use windows::core::{w, HSTRING, PCWSTR};
 use windows::Win32::Networking::WinHttp::*;
 
-use super::mode::{tray_running, Mode, Window};
+use super::mode::{tray_exe, tray_running, tray_version, Mode, Window};
+use crate::ui_kit::window::{close_windows_of, same_file};
 use crate::log::{app_dir, log};
 
 /// Repositorio público donde se publican las versiones (Releases).
@@ -57,6 +58,12 @@ fn save(s: &State) {
 
 pub fn current() -> &'static str {
     env!("CARGO_PKG_VERSION")
+}
+
+/// "0.4.8" → un número que se compara como la versión (lo contesta la grabadora a `WM_VERSION`).
+pub fn version_code(v: &str) -> u32 {
+    let (a, b, c) = parse(v);
+    (a.min(255) << 16) | (b.min(255) << 8) | c.min(255)
 }
 
 fn parse(v: &str) -> (u32, u32, u32) {
@@ -262,6 +269,27 @@ pub fn apply(target: &Path) -> i32 {
     log(&format!("Clippy actualizado a {}", current()));
     let _ = Mode::Tray { background: false }.spawn(target);
     0
+}
+
+/// Se abrió este .exe con una grabadora más vieja andando desde otro: la cierra, se copia encima de su .exe y la
+/// vuelve a abrir desde ahí (como "Actualizar"; así el inicio con Windows sigue apuntando al mismo lugar).
+/// false si no había nada que reemplazar (misma versión o más nueva, o el mismo .exe).
+pub fn replace_running() -> bool {
+    let (Some(old), Ok(me)) = (tray_exe(), std::env::current_exe()) else { return false };
+    if same_file(&old, &me) {
+        return false;
+    }
+    let running = tray_version().unwrap_or(0);
+    if running >= version_code(current()) {
+        return false;
+    }
+    log(&format!("se abrió la {} con una versión anterior abierta en {}: se cierra y se reemplaza", current(), old.display()));
+    close_windows_of(&old);
+    // Si no se pudo reemplazar (la carpeta no deja escribir), la vieja ya se cerró: queda abierta esta, desde donde está.
+    if apply(&old) != 0 {
+        Mode::Tray { background: false }.launch();
+    }
+    true
 }
 
 /// Al arrancar: borrar restos de una actualización anterior.

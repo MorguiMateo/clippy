@@ -29,7 +29,7 @@ cargo build --profile fast --features devtools
 
 | Argumentos | Qué hace |
 | --- | --- |
-| (ninguno) / `--background` | Grabadora con ícono en la bandeja (`--background`: sin abrir la ventana, para el inicio con Windows). |
+| (ninguno) / `--background` | Grabadora con ícono en la bandeja (`--background`: sin abrir la ventana, para el inicio con Windows). Si ya hay una abierta de una versión anterior desde otro .exe, la cierra, se copia encima de ese .exe y lo vuelve a abrir. |
 | `--settings` | Ventana principal / ajustes. |
 | `--editor [archivo]` | Editor de clips. |
 | `--apply-update <ruta>` | Lo usa el actualizador: reemplaza el exe instalado y lo vuelve a abrir. |

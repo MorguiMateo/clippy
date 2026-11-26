@@ -126,24 +126,53 @@ pub fn find_own_window(title: &str) -> Option<HWND> {
 }
 
 fn process_is_clippy(pid: u32) -> bool {
+    let Some(path) = process_path(pid) else { return false };
+    let path = path.to_string_lossy().to_lowercase();
+    let me = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_lowercase()))
+        .unwrap_or_else(|| "clippy.exe".into());
+    path.ends_with(&me)
+}
+
+/// Ruta completa del .exe de un proceso.
+pub fn process_path(pid: u32) -> Option<std::path::PathBuf> {
     use windows::core::PWSTR;
     use windows::Win32::System::Threading::{OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION};
     unsafe {
-        let Ok(h) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else { return false };
+        let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
         let mut buf = [0u16; 1024];
         let mut len = buf.len() as u32;
         let ok = QueryFullProcessImageNameW(h, PROCESS_NAME_WIN32, PWSTR(buf.as_mut_ptr()), &mut len).is_ok();
         let _ = CloseHandle(h);
-        if !ok {
-            return false;
-        }
-        let path = String::from_utf16_lossy(&buf[..len as usize]).to_lowercase();
-        let me = std::env::current_exe()
-            .ok()
-            .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_lowercase()))
-            .unwrap_or_else(|| "clippy.exe".into());
-        path.ends_with(&me)
+        ok.then(|| String::from_utf16_lossy(&buf[..len as usize]).into())
     }
+}
+
+/// Pide cerrar (como la X) todas las ventanas de los procesos que corren desde `exe`: los ajustes, el editor y la
+/// grabadora de otra versión, sin importar cómo se llamen sus ventanas.
+pub fn close_windows_of(exe: &std::path::Path) {
+    use windows::Win32::Foundation::{BOOL, WPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{EnumWindows, GetWindowThreadProcessId, PostMessageW, WM_CLOSE};
+    unsafe extern "system" fn cb(h: HWND, lp: LPARAM) -> BOOL {
+        let exe = &*(lp.0 as *const std::path::PathBuf);
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(h, Some(&mut pid));
+        if process_path(pid).is_some_and(|p| same_file(&p, exe)) {
+            let _ = PostMessageW(h, WM_CLOSE, WPARAM(0), LPARAM(0));
+        }
+        true.into()
+    }
+    let exe = exe.to_path_buf();
+    unsafe {
+        let _ = EnumWindows(Some(cb), LPARAM(&exe as *const std::path::PathBuf as isize));
+    }
+}
+
+/// ¿Son el mismo archivo? (Windows no distingue mayúsculas en las rutas.)
+pub fn same_file(a: &std::path::Path, b: &std::path::Path) -> bool {
+    let norm = |p: &std::path::Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf()).to_string_lossy().to_lowercase();
+    norm(a) == norm(b)
 }
 
 /// Abre la carpeta en el Explorador (la crea si no existe).

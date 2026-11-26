@@ -18,7 +18,7 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 use super::autostart;
 use super::keys::hotkey_name;
 use super::status::{self, Status};
-use super::mode::{Mode, Window, TRAY_CLASS, TRAY_MUTEX, WM_HOTKEY_SUSPEND, WM_REC_EVENT, WM_RELOAD, WM_TRAY, WM_UPDATE};
+use super::mode::{tray_running, Mode, Window, TRAY_CLASS, TRAY_MUTEX, WM_HOTKEY_SUSPEND, WM_REC_EVENT, WM_RELOAD, WM_TRAY, WM_UPDATE, WM_VERSION};
 use super::update;
 use crate::config::{self, Config, GlobalAction};
 use crate::log::log;
@@ -58,7 +58,14 @@ struct App {
 pub fn run(background: bool) {
     unsafe {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-        // Una sola instancia: si ya está corriendo, abrir sus ajustes.
+        // Una sola instancia: si ya está corriendo una versión anterior desde otro .exe, este la reemplaza; si no,
+        // se abren sus ajustes. Se mira antes de tomar el candado: tenerlo abierto haría creer que la vieja sigue.
+        if tray_running() {
+            if !update::replace_running() {
+                open_settings();
+            }
+            return;
+        }
         let _mutex = CreateMutexW(None, true, TRAY_MUTEX);
         if GetLastError() == ERROR_ALREADY_EXISTS {
             open_settings();
@@ -456,6 +463,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             }
             LRESULT(0)
         }
+        WM_VERSION => LRESULT(update::version_code(update::current()) as isize),
         WM_RELOAD => {
             let cfg = config::load();
             with_app(|a| a.apply(cfg, false));

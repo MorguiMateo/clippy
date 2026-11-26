@@ -7,7 +7,9 @@ use std::path::{Path, PathBuf};
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM, WPARAM};
 use windows::Win32::System::Threading::{OpenMutexW, SYNCHRONIZATION_SYNCHRONIZE};
-use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, GetWindowThreadProcessId, PostMessageW, WM_APP, WM_CLOSE};
+use windows::Win32::UI::WindowsAndMessaging::{
+    FindWindowW, GetWindowThreadProcessId, PostMessageW, SendMessageTimeoutW, SMTO_ABORTIFHUNG, WM_APP, WM_CLOSE,
+};
 
 use crate::ui_kit::window::find_own_window;
 
@@ -136,6 +138,9 @@ pub const WM_REC_EVENT: u32 = WM_APP + 3;
 pub const WM_HOTKEY_SUSPEND: u32 = WM_APP + 5;
 /// Hay una versión nueva.
 pub const WM_UPDATE: u32 = WM_APP + 6;
+/// Pregunta la versión de la grabadora: contesta `update::version_code` (las anteriores a 0.4.8 no lo conocen y
+/// contestan 0).
+pub const WM_VERSION: u32 = WM_APP + 7;
 
 /// ¿Está abierta la grabadora? (aunque su ventana todavía no exista).
 pub fn tray_running() -> bool {
@@ -165,6 +170,19 @@ pub fn tray_pid() -> Option<u32> {
     let mut pid = 0u32;
     unsafe { GetWindowThreadProcessId(h, Some(&mut pid)) };
     (pid != 0).then_some(pid)
+}
+
+/// Versión de la grabadora abierta (0 = una anterior a 0.4.8), si contesta.
+pub fn tray_version() -> Option<u32> {
+    let h = find_tray()?;
+    let mut answer = 0usize;
+    let ok = unsafe { SendMessageTimeoutW(h, WM_VERSION, WPARAM(0), LPARAM(0), SMTO_ABORTIFHUNG, 2000, Some(&mut answer)) };
+    (ok.0 != 0).then_some(answer as u32)
+}
+
+/// El .exe desde el que corre la grabadora abierta.
+pub fn tray_exe() -> Option<PathBuf> {
+    crate::ui_kit::window::process_path(tray_pid()?)
 }
 
 pub fn post_tray(msg: u32, wp: usize) -> bool {
