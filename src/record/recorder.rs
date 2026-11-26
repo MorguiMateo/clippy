@@ -7,10 +7,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
-use windows::Win32::Foundation::HANDLE;
+use windows::Win32::Foundation::{FILETIME, HANDLE};
 use windows::Win32::Graphics::Gdi::HMONITOR;
 use windows::Win32::System::Memory::{HeapOptimizeResources, HeapSetInformation};
-use windows::Win32::System::Threading::{GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_ABOVE_NORMAL};
+use windows::Win32::System::ProcessStatus::{K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS, PROCESS_MEMORY_COUNTERS_EX};
+use windows::Win32::System::SystemInformation::GetSystemTimeAsFileTime;
+use windows::Win32::System::Threading::{
+    GetCurrentProcess, GetCurrentThread, GetProcessTimes, SetThreadPriority, THREAD_PRIORITY_ABOVE_NORMAL,
+};
 
 use super::audio::{self, Audio, AudioBuf, Source};
 use super::capture::{Aim, Capture, DeviceLost};
@@ -170,6 +174,27 @@ fn give_back_memory() {
     }
 }
 
+/// Milisegundos desde que se abrió este proceso, para el log del arranque.
+fn since_launch_ms() -> i64 {
+    let t = |f: FILETIME| ((f.dwHighDateTime as i64) << 32 | f.dwLowDateTime as i64) / 10_000;
+    let [mut created, mut exit, mut kernel, mut user] = [FILETIME::default(); 4];
+    unsafe {
+        if GetProcessTimes(GetCurrentProcess(), &mut created, &mut exit, &mut kernel, &mut user).is_err() {
+            return -1;
+        }
+        t(GetSystemTimeAsFileTime()) - t(created)
+    }
+}
+
+/// RAM privada del proceso (la del Administrador de tareas), en MB.
+fn private_mb() -> usize {
+    let mut m = PROCESS_MEMORY_COUNTERS_EX { cb: size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32, ..Default::default() };
+    unsafe {
+        let _ = K32GetProcessMemoryInfo(GetCurrentProcess(), &mut m as *mut _ as *mut PROCESS_MEMORY_COUNTERS, m.cb);
+    }
+    m.PrivateUsage >> 20
+}
+
 /// Lo que tarda el aviso de "clip guardado" en empezar a sonar y llegar a la captura (100 ns):
 /// se silencia en el canal escritorio junto con el sonido.
 const SOUND_LATENCY: i64 = 2_050_000;
@@ -294,6 +319,7 @@ fn session(
     align: bool,
     untested: &mut Option<(u32, u32)>,
 ) -> Result<End> {
+    let begun = std::time::Instant::now();
     let mut game = game::Detector::default();
     game.poll(0);
     // Qué monitor grabar: el del juego; si no hay juego, el de la ventana activa; si no, el principal.
@@ -447,8 +473,13 @@ fn session(
         let added = out.len();
         packets.extend(out.drain(..));
         seal_gops(&mut packets, added);
-        if !packets.is_empty() {
-            *untested = None;
+        if !packets.is_empty() && untested.take().is_some() {
+            log(&format!(
+                "primer cuadro codificado: {} ms después de empezar la sesión, {} ms después de abrir Clippy, RAM privada {} MB",
+                begun.elapsed().as_millis(),
+                since_launch_ms(),
+                private_mb()
+            ));
         }
 
         if now >= next_frame {
