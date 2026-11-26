@@ -232,6 +232,7 @@ src/
     recorder.rs    hilo de grabación: captura -> encoder -> buffer -> guardar
     game.rs        qué es "el juego" (ventana en pantalla completa), para video y audio
     cursor.rs      el cursor del mouse sobre la imagen del escritorio (en la GPU, antes de pasarla a NV12)
+    track.rs       la pista de audio de los clips: mezcla los canales y la comprime a AAC (aac.rs) mientras graba
     capture.rs, convert.rs, encoder.rs, audio.rs, mux.rs, clock.rs
   settings/        ventana principal (mod.rs: estado; pages.rs: páginas)
   editor/          editor de clips (proceso aparte)

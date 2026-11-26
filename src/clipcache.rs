@@ -57,6 +57,7 @@ impl Wave {
 }
 
 /// Arma la forma de onda a medida que llegan las muestras (estéreo, 48 kHz).
+#[derive(Clone)]
 pub struct WaveBuilder {
     peak: Vec<u8>,
     rms: Vec<u8>,
@@ -102,6 +103,11 @@ impl WaveBuilder {
         self.n = 0;
     }
 
+    /// Saca los valores ya cerrados (la grabadora arma la forma de onda de a poco, mientras graba).
+    pub fn take(&mut self) -> impl Iterator<Item = (u8, u8)> + '_ {
+        self.peak.drain(..).zip(self.rms.drain(..))
+    }
+
     pub fn finish(mut self) -> Wave {
         if self.n > 0 {
             self.flush();
@@ -110,13 +116,12 @@ impl WaveBuilder {
     }
 }
 
-/// Forma de onda de PCM estéreo intercalado de 48 kHz.
-pub fn wave_from_pcm(pcm: &[i16]) -> Wave {
-    let mut b = WaveBuilder::new();
-    for c in pcm.as_chunks::<2>().0 {
-        b.push(c[0], c[1]);
+/// Una forma de onda hecha de valores (pico, RMS) ya calculados.
+impl FromIterator<(u8, u8)> for Wave {
+    fn from_iter<I: IntoIterator<Item = (u8, u8)>>(it: I) -> Self {
+        let (peak, rms) = it.into_iter().unzip();
+        Wave { peak, rms }
     }
-    b.finish()
 }
 
 fn to_hex(v: &[u8]) -> String {

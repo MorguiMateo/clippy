@@ -95,7 +95,7 @@ El exe sale con 0 si todo está bien, con 3 si hay algo para revisar y con 1 si 
 
 | Síntoma | Dónde mirar |
 |---|---|
-| Sube la RAM fuera de los buffers | Paquetes que no se sueltan (`trim_video` en `record/recorder.rs`), muestras de Media Foundation sin liberar (`record/encoder.rs`), hilos de guardado (`record/mux.rs`), bloques de audio (`record/audio.rs`). |
+| Sube la RAM fuera de los buffers | Paquetes que no se sueltan (`trim_video` en `record/recorder.rs`), muestras de Media Foundation sin liberar (`record/encoder.rs`), hilos de guardado (`record/mux.rs`), bloques de audio sin mezclar (`record/audio.rs`) y paquetes AAC de la pista (`trim_before` en `record/track.rs`). |
 | Sube la memoria de video | Texturas que se recrean: el pool de `Converter` (`record/convert.rs`), la copia de la captura y el cursor (`record/capture.rs`, `record/cursor.rs`). |
 | Suben los hilos o los handles | Hilos de audio (`Audio::open`, `record/audio.rs`), eventos de WASAPI, procesos abiertos en `record/game.rs`, hilos de guardado. |
 | Tirones por conversión sin terminar | La placa atiende la conversión detrás del juego: prioridad de Clippy en la placa (`Capture::open_on` en `record/capture.rs`). |
