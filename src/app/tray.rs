@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 use windows::core::{w, HSTRING, PCWSTR};
 use windows::Win32::Foundation::*;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::System::SystemInformation::GetTickCount;
 use windows::Win32::System::Threading::CreateMutexW;
 use windows::Win32::UI::HiDpi::{SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2};
 use windows::Win32::UI::Input::KeyboardAndMouse::{RegisterHotKey, UnregisterHotKey, HOT_KEY_MODIFIERS, MOD_NOREPEAT};
@@ -206,18 +207,23 @@ impl App {
     /// Registra los atajos globales. Devuelve los nombres de los que no se pudieron usar.
     fn register_hotkeys(&mut self) -> Vec<String> {
         self.unregister_all();
-        let mut failed = Vec::new();
+        let (mut ok, mut failed) = (Vec::new(), Vec::new());
         for a in GlobalAction::ALL {
             let (vk, mods) = self.cfg.hotkey(a);
             // Guardar clip solo mientras graba; los demás, siempre.
             if vk == 0 || (a == GlobalAction::SaveClip && !self.cfg.enabled) {
                 continue;
             }
-            let ok = unsafe { RegisterHotKey(self.hwnd, a.id(), HOT_KEY_MODIFIERS(mods | MOD_NOREPEAT.0), vk).is_ok() };
-            if !ok {
-                failed.push(hotkey_name(vk, mods));
+            let name = hotkey_name(vk, mods);
+            match unsafe { RegisterHotKey(self.hwnd, a.id(), HOT_KEY_MODIFIERS(mods | MOD_NOREPEAT.0), vk) } {
+                Ok(()) => ok.push(name),
+                Err(e) => {
+                    log(&format!("no se pudo registrar el atajo {name}: {e}"));
+                    failed.push(name);
+                }
             }
         }
+        log(&format!("atajos registrados: {}", if ok.is_empty() { "ninguno".into() } else { ok.join(", ") }));
         failed
     }
 
@@ -269,8 +275,9 @@ impl App {
     }
 
     fn save_clip(&self) {
-        if let Some(r) = &self.rec {
-            r.save();
+        match &self.rec {
+            Some(r) => r.save(),
+            None => log("guardar: se descarta, la grabadora no está andando"),
         }
     }
 
@@ -422,7 +429,12 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         WM_HOTKEY => {
             match GlobalAction::from_id(wp.0 as i32) {
                 Some(GlobalAction::SaveClip) => {
-                    with_app(|a| a.save_clip());
+                    // Cuánto esperó el atajo en la cola: si es mucho, el bucle de la bandeja estuvo trabado.
+                    let queued = GetTickCount().wrapping_sub(GetMessageTime() as u32);
+                    log(&format!("guardar: llegó el atajo (esperó {queued} ms en la cola de la bandeja)"));
+                    if with_app(|a| a.save_clip()).is_none() {
+                        log("guardar: se descarta el atajo, la bandeja estaba ocupada con otra cosa");
+                    }
                 }
                 Some(GlobalAction::ToggleRecording) => {
                     // Desde el juego no se ve la bandeja: avisar con un sonido.
@@ -465,6 +477,7 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         WM_HOTKEY_SUSPEND => {
             with_app(|a| {
                 if wp.0 == 1 {
+                    log("atajos suspendidos: Ajustes está esperando una tecla nueva");
                     a.unregister_all();
                 } else {
                     a.register_hotkeys();

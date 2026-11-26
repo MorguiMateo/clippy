@@ -4,7 +4,7 @@
 use std::collections::VecDeque;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, TryRecvError};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use windows::Win32::Graphics::Gdi::HMONITOR;
@@ -24,7 +24,8 @@ use crate::mf::{frames_at, Mf};
 use crate::ui_kit::sound;
 
 pub enum Cmd {
-    Save,
+    /// Guardar un clip; lleva cuándo se pidió (para anotar cuánto tardó en llegar).
+    Save(Instant),
     /// Cambios que no necesitan reiniciar el video (duración, audio, sonido, carpeta).
     Update(Config),
     Stop,
@@ -60,7 +61,9 @@ impl Recorder {
     }
 
     pub fn save(&self) {
-        let _ = self.tx.send(Cmd::Save);
+        if self.tx.send(Cmd::Save(Instant::now())).is_err() {
+            log("guardar: se descarta, el hilo de grabación ya terminó");
+        }
     }
 
     pub fn update(&self, cfg: Config) {
@@ -139,7 +142,11 @@ fn thread_main(mut cfg: Config, rx: Receiver<Cmd>, notify: Notify) {
                 match rx.recv_timeout(RETRY) {
                     Ok(Cmd::Stop) | Err(RecvTimeoutError::Disconnected) => break,
                     Ok(Cmd::Update(c)) => cfg = c,
-                    Ok(Cmd::Save) => notify(Event::SaveFailed(tr!("Clippy no está grabando en este momento", "Clippy isn't recording right now", "O Clippy não está gravando agora").into())),
+                    Ok(Cmd::Save(_)) => {
+                        let m = tr!("Clippy no está grabando en este momento", "Clippy isn't recording right now", "O Clippy não está gravando agora");
+                        log(&format!("guardar: se descarta, {m}"));
+                        notify(Event::SaveFailed(m.into()));
+                    }
                     Err(RecvTimeoutError::Timeout) => {}
                 }
             }
@@ -338,7 +345,8 @@ fn session(
         loop {
             match rx.try_recv() {
                 Ok(Cmd::Stop) | Err(TryRecvError::Disconnected) => return Ok(End::Stop),
-                Ok(Cmd::Save) => {
+                Ok(Cmd::Save(asked)) => {
+                    log(&format!("guardar: la grabadora tomó la orden {} ms después del pedido", asked.elapsed().as_millis()));
                     let now = now_100ns() - t0;
                     if save_clip(cfg, &packets, &enc, &au, now, frame_dur, notify) && cfg.sound_on_save {
                         sound::play_saved();
@@ -596,6 +604,7 @@ fn save_clip(cfg: &Config, packets: &VecDeque<Packet>, enc: &Encoder, au: &Audio
     let keep = cfg.seconds as i64 * 10_000_000;
     let no_video = || tr!("todavía no hay video en el buffer", "there's no video in the buffer yet", "ainda não há vídeo no buffer");
     let fail = |m: &str| {
+        log(&format!("guardar: se descarta, {m}"));
         notify(Event::SaveFailed(m.into()));
         false
     };
