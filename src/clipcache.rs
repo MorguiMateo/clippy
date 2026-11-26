@@ -57,6 +57,7 @@ impl Wave {
 }
 
 /// Arma la forma de onda a medida que llegan las muestras (estéreo, 48 kHz).
+#[derive(Clone)]
 pub struct WaveBuilder {
     peak: Vec<u8>,
     rms: Vec<u8>,

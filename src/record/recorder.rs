@@ -228,9 +228,14 @@ struct AudioState {
     track_retry: i64,
 }
 
-/// Un canal prendido, con su volumen, para la mezcla.
-fn input(on: bool, c: &Channel, volume: u32, masked: bool) -> Option<Input<'_>> {
-    on.then(|| Input { buf: &c.buf, gain: volume as f32 / 100.0, masked })
+/// Los canales prendidos, con su volumen, para la mezcla.
+fn inputs<'a>(cfg: &Config, game: &'a Channel, mic: &'a Channel, desktop: &'a Channel) -> [Option<Input<'a>>; 3] {
+    let input = |on: bool, c: &'a Channel, volume: u32, masked: bool| on.then(|| Input { buf: &c.buf, gain: volume as f32 / 100.0, masked });
+    [
+        input(cfg.game_audio, game, cfg.game_volume, false),
+        input(cfg.mic_audio, mic, cfg.mic_volume, false),
+        input(cfg.desktop_audio, desktop, cfg.desktop_volume, true),
+    ]
 }
 
 impl AudioState {
@@ -281,12 +286,7 @@ impl AudioState {
             }
         }
         if let Some(t) = &mut self.track {
-            let inputs = [
-                input(cfg.game_audio, &self.game_ch, cfg.game_volume, false),
-                input(cfg.mic_audio, &self.mic, cfg.mic_volume, false),
-                input(cfg.desktop_audio, &self.desktop, cfg.desktop_volume, true),
-            ];
-            if let Err(e) = t.advance(to, &inputs, &self.masks) {
+            if let Err(e) = t.advance(to, &inputs(cfg, &self.game_ch, &self.mic, &self.desktop), &self.masks) {
                 log(&format!("no se pudo comprimir el audio: {e:?}"));
                 self.track = None;
                 self.track_retry = now + AUDIO_RETRY;
@@ -396,7 +396,7 @@ fn session(
                     let now = now_100ns() - t0;
                     // Lo último que llegó de cada captura, para completar la pista hasta el final del clip.
                     au.poll(t0);
-                    if save_clip(cfg, &packets, &enc, &mut au, now, frame_dur, notify) && cfg.sound_on_save {
+                    if save_clip(cfg, &packets, &enc, &au, now, frame_dur, notify) && cfg.sound_on_save {
                         sound::play_saved();
                         au.masks.push((now, now + sound::SAVED_LEN + SOUND_LATENCY));
                     }
@@ -579,7 +579,7 @@ fn trim_video(p: &mut VecDeque<Packet>, min_pts: i64) {
 }
 
 /// Arma el trabajo de guardado y lo lanza en otro hilo. Devuelve false si no había nada que guardar.
-fn save_clip(cfg: &Config, packets: &VecDeque<Packet>, enc: &Encoder, au: &mut AudioState, now: i64, frame_dur: i64, notify: &Notify) -> bool {
+fn save_clip(cfg: &Config, packets: &VecDeque<Packet>, enc: &Encoder, au: &AudioState, now: i64, frame_dur: i64, notify: &Notify) -> bool {
     let started = std::time::Instant::now();
     let keep = cfg.seconds as i64 * 10_000_000;
     let no_video = || tr!("todavía no hay video en el buffer", "there's no video in the buffer yet", "ainda não há vídeo no buffer");
@@ -598,22 +598,10 @@ fn save_clip(cfg: &Config, packets: &VecDeque<Packet>, enc: &Encoder, au: &mut A
     let pk: Vec<Packet> = packets.iter().skip(start).cloned().collect();
     let base = pk[0].pts;
     let end = pk.last().map_or(base, |p| p.pts) + frame_dur;
-    // La pista va un poco detrás del presente: se completa ahora hasta el final del video con el audio que ya llegó.
-    let t = std::time::Instant::now();
-    au.advance(cfg, frames_at(end), now);
-    let mixed = t.elapsed();
-    let audio = au.track.as_ref().and_then(|t| t.clip(base, end));
-    let sound = audio.as_ref().map_or(String::new(), |a| {
-        let (first, last) = (&a.packets[0], &a.packets[a.packets.len() - 1]);
-        let ms = |t: i64| t as f64 / 10_000.0;
-        format!(
-            ", audio: {} paquetes AAC, de {:+.1} ms a {:+.1} ms del video",
-            a.packets.len(),
-            ms(first.pts - base),
-            ms(last.pts + time_of(super::aac::AAC_FRAME as i64) - end)
-        )
-    });
-    log(&format!("clip: {} cuadros, {} fotogramas clave{sound}", pk.len(), pk.iter().filter(|p| p.key).count()));
+    // La pista va un poco detrás del presente: lo que le falta hasta el final del video se mezcla ahora con el audio
+    // que ya llegó (sin moverla) y se comprime en el hilo que guarda.
+    let audio = au.track.as_ref().and_then(|t| t.clip(base, end, &inputs(cfg, &au.game_ch, &au.mic, &au.desktop), &au.masks));
+    log(&format!("clip: {} cuadros, {} fotogramas clave", pk.len(), pk.iter().filter(|p| p.key).count()));
     if au.game.pid().is_none() {
         if cfg.game_audio {
             log("clip sin canal de juego: no se detectó ningún juego");
@@ -635,11 +623,27 @@ fn save_clip(cfg: &Config, packets: &VecDeque<Packet>, enc: &Encoder, au: &mut A
         i += 1;
     }
     let notify = notify.clone();
-    // Cuánto se frenó el hilo de grabación (incluye completar la pista de audio: "mezcla") y cuánto tardó escribir el MP4
+    // Cuánto se frenó el hilo de grabación, cuánto tardó comprimir la cola del audio ("mezcla") y cuánto escribir el MP4
     // (lo lee tools/medir.ps1).
     let held = started.elapsed();
     std::thread::spawn(move || {
         let ms = |d: std::time::Duration| d.as_millis();
+        let t = std::time::Instant::now();
+        let audio = audio.and_then(|a| {
+            let _mf = Mf::init();
+            a.complete()
+        });
+        let mixed = t.elapsed();
+        if let Some(a) = &audio {
+            let (first, last) = (&a.packets[0], &a.packets[a.packets.len() - 1]);
+            let ms = |t: i64| t as f64 / 10_000.0;
+            log(&format!(
+                "audio del clip: {} paquetes AAC, de {:+.1} ms a {:+.1} ms del video",
+                a.packets.len(),
+                ms(first.pts - base),
+                ms(last.pts + time_of(super::aac::AAC_FRAME as i64) - end)
+            ));
+        }
         let t = std::time::Instant::now();
         let job = mux::Job { path, video_type, packets: pk, base, frame_dur, audio };
         match mux::write(job) {

@@ -58,6 +58,15 @@ impl Aac {
         Ok(())
     }
 
+    /// Saca los paquetes que el encoder tenía retenidos (fin de la entrada).
+    pub fn drain(&mut self, out: &mut Vec<Packet>) -> Result<()> {
+        unsafe {
+            self.mft.ProcessMessage(MFT_MESSAGE_COMMAND_DRAIN, 0)?;
+            while self.pull(out)? {}
+        }
+        Ok(())
+    }
+
     /// Saca un paquete, si hay uno listo.
     unsafe fn pull(&mut self, out: &mut Vec<Packet>) -> Result<bool> {
         // Una muestra nueva en cada vuelta (el buffer es el mismo): así no queda la marca de tiempo del paquete anterior.
