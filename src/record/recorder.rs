@@ -400,12 +400,23 @@ fn session(
         // En "Solo juegos" sin el juego a la vista el video va en negro: no se copia una pantalla que se descartaría.
         // La primera imagen sí hace falta, para preparar la conversión.
         if visible || conv.is_none() {
-            cap.poll(now)?;
+            // La imagen que se retiene sin convertir todavía (la placa iba atrasada) no se suelta.
+            let keep = conv.as_ref().is_some_and(|c| !c.has(cap.version));
+            cap.poll(now, keep)?;
         }
         if let Some(f) = &cap.latest {
             if !conv.as_ref().is_some_and(|c| c.is_for(f)) {
                 conv = Some(cap.check(Converter::new(&cap.device, &cap.context, f, w, h, fps, pool))?);
                 probe_at = Some(now + PROBE_AFTER);
+            }
+        }
+        if let (Some(c), Some(f)) = (conv.as_mut(), &cap.latest) {
+            if let Err(e) = c.watch(&f.tex) {
+                let r = cap.detach(e);
+                cap.check(r)?;
+                if let Some(f) = &cap.latest {
+                    cap.check(c.watch(&f.tex))?;
+                }
             }
         }
         au.sync(cfg, now);
@@ -447,7 +458,7 @@ fn session(
                     };
                     if r.converted && probe_at.is_some_and(|t| now >= t) {
                         probe_at = None;
-                        log(&c.probe(&r.tex));
+                        log(&c.probe(cap.readable(), &r.tex));
                     }
                     #[cfg(feature = "devtools")]
                     if reject {
