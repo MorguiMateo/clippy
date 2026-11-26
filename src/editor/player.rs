@@ -16,7 +16,6 @@ use windows::Win32::Media::MediaFoundation::*;
 use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_ALL};
 
 use super::media::{self, d3d_manager, pack, reader, seek, AUDIO, EOS, VIDEO};
-use crate::i18n::tr;
 use crate::mf::{self, frames_at, Mf, FRAME_BYTES};
 
 /// Reloj de reproducción compartido (100 ns): si avanza, desde dónde y cuándo, y a qué velocidad (1 = normal).
@@ -212,11 +211,7 @@ impl Video {
         t.SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_RGB32)?;
         t.SetUINT64(&MF_MT_FRAME_SIZE, pack(w, h))?;
         r.SetCurrentMediaType(VIDEO, None, &t).map_err(|_| {
-            anyhow!(tr!(
-                "Windows no puede decodificar este video. Si es HEVC, instalá \"Extensiones de video HEVC\" desde Microsoft Store.",
-                "Windows can't decode this video. If it's HEVC, install \"HEVC Video Extensions\" from the Microsoft Store.",
-                "O Windows não consegue decodificar este vídeo. Se for HEVC, instale \"Extensões de Vídeo HEVC\" pela Microsoft Store."
-            ))
+            anyhow!("Windows can't decode this video. If it's HEVC, install \"HEVC Video Extensions\" from the Microsoft Store.")
         })?;
         let cur = r.GetCurrentMediaType(VIDEO)?;
         let stride = cur.GetUINT32(&MF_MT_DEFAULT_STRIDE).map(|s| s as i32).unwrap_or((w * 4) as i32);

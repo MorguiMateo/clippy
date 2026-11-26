@@ -8,7 +8,6 @@ use std::path::{Path, PathBuf};
 
 use eframe::egui::{self, Align, Align2, Color32, CursorIcon, FontId, Layout, Pos2, Rect, RichText, Sense, Shape, Stroke, Vec2};
 
-use crate::i18n::{tr, trf};
 use crate::ui_kit::theme::*;
 use crate::ui_kit::window::open_folder;
 use super::library::{self, Asset, Folder};
@@ -57,8 +56,8 @@ enum Dialog {
 fn videos(n: usize) -> String {
     let c = fmt_count(n);
     match n {
-        1 => tr!("1 video", "1 video", "1 vídeo").into(),
-        _ => trf!("{c} videos", "{c} videos", "{c} vídeos"),
+        1 => "1 video".into(),
+        _ => format!("{c} videos"),
     }
 }
 
@@ -72,9 +71,9 @@ fn asset_card(ui: &mut egui::Ui, rect: Rect, a: &Asset, info: Option<&library::I
         Some(t) => shapes.push(Shape::image(t.id(), thumb, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE)),
         None => {
             let msg = if info.and_then(|i| i.error.as_ref()).is_some() {
-                tr!("No se puede leer", "Can't be read", "Não dá para ler")
+                "Can't be read"
             } else {
-                tr!("Cargando…", "Loading…", "Carregando…")
+                "Loading…"
             };
             shapes.push(ui.fonts(|f| Shape::text(f, thumb.center(), Align2::CENTER_CENTER, msg, FontId::proportional(12.0), MUTED)));
         }
@@ -99,7 +98,7 @@ fn asset_card(ui: &mut egui::Ui, rect: Rect, a: &Asset, info: Option<&library::I
     }
     let title = one_line(p, a.title.clone(), FontId::proportional(13.0), rect.width() - 4.0);
     shapes.push(Shape::galley(Pos2::new(rect.left() + 2.0, thumb.bottom() + 6.0), title, TEXT));
-    let sub = format!("{}{}", fmt_bytes(a.size as f64), if a.imported { tr!(" · importado", " · imported", " · importado") } else { "" });
+    let sub = format!("{}{}", fmt_bytes(a.size as f64), if a.imported { " · imported" } else { "" });
     let sub = one_line(p, sub, FontId::proportional(11.5), rect.width() - 4.0);
     shapes.push(Shape::galley(Pos2::new(rect.left() + 2.0, thumb.bottom() + 25.0), sub, MUTED));
     paint_pressed(ui, rect.center(), press(ui, &resp), PRESS_DEPTH, shapes);
@@ -115,11 +114,7 @@ fn asset_card(ui: &mut egui::Ui, rect: Rect, a: &Asset, info: Option<&library::I
         add = r.on_hover_cursor(CursorIcon::PointingHand).on_hover_text(add_label()).clicked();
     }
     let title = &a.title;
-    let resp = resp.on_hover_text(trf!(
-        "{title}\nDoble clic para agregarlo a la línea de tiempo",
-        "{title}\nDouble-click to add it to the timeline",
-        "{title}\nClique duplo para adicioná-lo à linha do tempo"
-    ));
+    let resp = resp.on_hover_text(format!("{title}\nDouble-click to add it to the timeline"));
     (resp, add)
 }
 
@@ -139,7 +134,7 @@ fn folder_card(ui: &mut egui::Ui, rect: Rect, f: &Folder) -> egui::Response {
     paint_pressed(ui, rect.center(), press(ui, &resp), PRESS_DEPTH, shapes);
     resp.on_hover_cursor(CursorIcon::PointingHand).on_hover_text({
         let name = &f.name;
-        trf!("{name}\nClic para abrirla", "{name}\nClick to open it", "{name}\nClique para abri-la")
+        format!("{name}\nClick to open it")
     })
 }
 
@@ -195,20 +190,20 @@ impl EditorApp {
             ui.set_height(32.0);
             match self.browser.dir.clone() {
                 Some(dir) => {
-                    if icon_only_button(ui, Glyph::Back, Kind::Ghost, tr!("Volver a la biblioteca", "Back to the library", "Voltar à biblioteca")).clicked() {
+                    if icon_only_button(ui, Glyph::Back, Kind::Ghost, "Back to the library").clicked() {
                         todo.push(Do::Open(None));
                     }
                     let name = dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                     ui.add(egui::Label::new(RichText::new(name).family(bold()).size(17.0).color(TEXT)).truncate());
                 }
                 None => {
-                    ui.label(RichText::new(tr!("Biblioteca", "Library", "Biblioteca")).family(bold()).size(17.0).color(TEXT));
+                    ui.label(RichText::new("Library").family(bold()).size(17.0).color(TEXT));
                 }
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let key = shortcuts::short(&self.prefs.keys, Act::Import);
-                let tip = trf!("Agregar videos de cualquier carpeta ({key})", "Add videos from any folder ({key})", "Adicionar vídeos de qualquer pasta ({key})");
-                if icon_button(ui, Glyph::Plus, tr!("Importar", "Import", "Importar"), Kind::Secondary, Vec2::ZERO).on_hover_text(tip).clicked() {
+                let tip = format!("Add videos from any folder ({key})");
+                if icon_button(ui, Glyph::Plus, "Import", Kind::Secondary, Vec2::ZERO).on_hover_text(tip).clicked() {
                     self.import_dialog();
                 }
                 if self.browser.dir.is_none() && icon_only_button(ui, Glyph::NewFolder, Kind::Ghost, new_folder()).clicked() {
@@ -228,15 +223,15 @@ impl EditorApp {
                         let n = self.browser.sel.len();
                         let c = fmt_count(n);
                         let picked = match n {
-                            1 => tr!("1 elegido", "1 selected", "1 escolhido").to_string(),
-                            _ => trf!("{c} elegidos", "{c} selected", "{c} escolhidos"),
+                            1 => "1 selected".to_string(),
+                            _ => format!("{c} selected"),
                         };
                         ui.label(RichText::new(picked).size(13.0).color(MUTED));
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if icon_only_button(ui, Glyph::Trash, Kind::Ghost, tr!("Eliminar (Supr)", "Delete (Del)", "Excluir (Del)")).clicked() {
+                            if icon_only_button(ui, Glyph::Trash, Kind::Ghost, "Delete (Del)").clicked() {
                                 todo.push(Do::Dialog(Dialog::Delete(self.selected_assets())));
                             }
-                            if icon_button(ui, Glyph::Plus, tr!("Agregar", "Add", "Adicionar"), Kind::Secondary, Vec2::ZERO).on_hover_text(add_label()).clicked() {
+                            if icon_button(ui, Glyph::Plus, "Add", Kind::Secondary, Vec2::ZERO).on_hover_text(add_label()).clicked() {
                                 todo.push(Do::Add(self.selected_assets()));
                             }
                         });
@@ -248,20 +243,12 @@ impl EditorApp {
         if nf + self.assets.len() == 0 {
             ui.add_space(24.0);
             if self.browser.dir.is_some() {
-                ui.label(RichText::new(tr!("Esta carpeta está vacía.", "This folder is empty.", "Esta pasta está vazia.")).color(TEXT));
-                let hint = tr!(
-                    "Para traer clips, elegilos en la biblioteca y usá «Mover a» con el clic derecho.",
-                    "To bring clips here, select them in the library and use “Move to” with a right-click.",
-                    "Para trazer clipes, escolha-os na biblioteca e use “Mover para” com o botão direito."
-                );
+                ui.label(RichText::new("This folder is empty.").color(TEXT));
+                let hint = "To bring clips here, select them in the library and use “Move to” with a right-click.";
                 ui.label(RichText::new(hint).color(MUTED));
             } else {
-                ui.label(RichText::new(tr!("No hay videos todavía.", "No videos yet.", "Ainda não há vídeos.")).color(TEXT));
-                let hint = tr!(
-                    "Guardá un clip mientras jugás, tocá Importar o arrastrá videos a la ventana.",
-                    "Save a clip while you play, click Import or drag videos into the window.",
-                    "Salve um clipe enquanto joga, clique em Importar ou arraste vídeos para a janela."
-                );
+                ui.label(RichText::new("No videos yet.").color(TEXT));
+                let hint = "Save a clip while you play, click Import or drag videos into the window.";
                 ui.label(RichText::new(hint).color(MUTED));
             }
         } else {
@@ -318,20 +305,20 @@ impl EditorApp {
                         todo.push(Do::Open(Some(f.path.clone())));
                     }
                     r.context_menu(|ui| {
-                        if ui.button(tr!("Abrir", "Open", "Abrir")).clicked() {
+                        if ui.button("Open").clicked() {
                             todo.push(Do::Open(Some(f.path.clone())));
                             ui.close_menu();
                         }
-                        if ui.button(tr!("Cambiar el nombre…", "Rename…", "Renomear…")).clicked() {
+                        if ui.button("Rename…").clicked() {
                             todo.push(Do::Dialog(Dialog::Name { name: f.name.clone(), files: Vec::new(), rename: Some(f.path.clone()), error: None }));
                             ui.close_menu();
                         }
-                        if ui.button(tr!("Abrir en el Explorador", "Open in File Explorer", "Abrir no Explorador")).clicked() {
+                        if ui.button("Open in File Explorer").clicked() {
                             open_folder(&f.path);
                             ui.close_menu();
                         }
                         ui.separator();
-                        if ui.button(RichText::new(tr!("Eliminar carpeta…", "Delete folder…", "Excluir pasta…")).color(DANGER)).clicked() {
+                        if ui.button(RichText::new("Delete folder…").color(DANGER)).clicked() {
                             todo.push(Do::Dialog(Dialog::DeleteFolder(f.path.clone())));
                             ui.close_menu();
                         }
@@ -379,19 +366,19 @@ impl EditorApp {
                         add_label().to_string()
                     } else {
                         let v = videos(n);
-                        trf!("Agregar {v} a la línea de tiempo", "Add {v} to the timeline", "Adicionar {v} à linha do tempo")
+                        format!("Add {v} to the timeline")
                     };
                     if ui.button(label).clicked() {
                         todo.push(Do::Add(paths.clone()));
                         ui.close_menu();
                     }
-                    if n == 1 && ui.button(tr!("Mostrar en el Explorador", "Show in File Explorer", "Mostrar no Explorador")).clicked() {
+                    if n == 1 && ui.button("Show in File Explorer").clicked() {
                         todo.push(Do::Reveal(paths[0].clone()));
                         ui.close_menu();
                     }
                     if imported == 0 {
-                        ui.menu_button(tr!("Mover a", "Move to", "Mover para"), |ui| {
-                            if b.dir.is_some() && ui.button(tr!("Biblioteca", "Library", "Biblioteca")).clicked() {
+                        ui.menu_button("Move to", |ui| {
+                            if b.dir.is_some() && ui.button("Library").clicked() {
                                 todo.push(Do::Move(paths.clone(), self.cfg.output_dir.clone()));
                                 ui.close_menu();
                             }
@@ -410,9 +397,9 @@ impl EditorApp {
                     }
                     ui.separator();
                     let del = if imported == n {
-                        tr!("Quitar de la biblioteca", "Remove from library", "Remover da biblioteca")
+                        "Remove from library"
                     } else {
-                        tr!("Eliminar…", "Delete…", "Excluir…")
+                        "Delete…"
                     };
                     if ui.button(RichText::new(del).color(DANGER)).clicked() {
                         todo.push(Do::Dialog(Dialog::Delete(paths.clone())));
@@ -474,11 +461,7 @@ impl EditorApp {
     fn busy_with(&mut self, paths: &[PathBuf]) -> bool {
         let busy = self.job.is_some() && paths.iter().any(|p| self.is_used(p));
         if busy {
-            let msg = tr!(
-                "Esperá a que termine la exportación: ese clip se está usando.",
-                "Wait for the export to finish: that clip is in use.",
-                "Espere a exportação terminar: esse clipe está em uso."
-            );
+            let msg = "Wait for the export to finish: that clip is in use.";
             self.message = Some((false, msg.into(), None));
         }
         busy
@@ -503,7 +486,7 @@ impl EditorApp {
         self.scan();
         if !failed.is_empty() {
             let files = failed.join(", ");
-            self.message = Some((false, trf!("No se pudo mover: {files}", "Couldn't move: {files}", "Não foi possível mover: {files}"), None));
+            self.message = Some((false, format!("Couldn't move: {files}"), None));
         }
     }
 
@@ -531,7 +514,7 @@ impl EditorApp {
         self.scan();
         if !failed.is_empty() {
             let files = failed.join(", ");
-            self.message = Some((false, trf!("No se pudo eliminar: {files}", "Couldn't delete: {files}", "Não foi possível excluir: {files}"), None));
+            self.message = Some((false, format!("Couldn't delete: {files}"), None));
         }
     }
 
@@ -551,11 +534,7 @@ impl EditorApp {
             }
             Err(e) => {
                 crate::log::log(&format!("biblioteca: no se pudo eliminar {}: {e}", dir.display()));
-                let msg = tr!(
-                    "No se pudo eliminar la carpeta: algo de adentro está abierto en otro programa.",
-                    "Couldn't delete the folder: something inside is open in another program.",
-                    "Não foi possível excluir a pasta: algo dentro dela está aberto em outro programa."
-                );
+                let msg = "Couldn't delete the folder: something inside is open in another program.";
                 self.message = Some((false, msg.into(), None));
             }
         }
@@ -565,11 +544,7 @@ impl EditorApp {
     fn name_folder(&mut self, name: &str, files: Vec<PathBuf>, rename: Option<PathBuf>) -> Result<(), String> {
         let name = name.trim();
         if !library::folder_name_ok(name) {
-            return Err(tr!(
-                "Ese nombre no sirve: no puede llevar < > : \" / \\ | ? *, terminar en punto ni ser uno que Windows reserva (CON, NUL, COM1…).",
-                "That name won't work: it can't contain < > : \" / \\ | ? *, end with a period, or be one Windows reserves (CON, NUL, COM1…).",
-                "Esse nome não serve: não pode ter < > : \" / \\ | ? *, terminar com ponto nem ser um que o Windows reserva (CON, NUL, COM1…)."
-            )
+            return Err("That name won't work: it can't contain < > : \" / \\ | ? *, end with a period, or be one Windows reserves (CON, NUL, COM1…)."
             .into());
         }
         let to = self.cfg.output_dir.join(name);
@@ -577,7 +552,7 @@ impl EditorApp {
             return Ok(());
         }
         if to.exists() {
-            return Err(tr!("Ya hay una carpeta con ese nombre.", "There's already a folder with that name.", "Já existe uma pasta com esse nome.").into());
+            return Err("There's already a folder with that name.".into());
         }
         match rename {
             Some(from) => {
@@ -587,11 +562,7 @@ impl EditorApp {
                 }
                 self.release_files(&inside);
                 let moved = library::rename_folder(&from, &to).map_err(|_| {
-                    tr!(
-                        "No se pudo cambiar el nombre: algo de adentro está abierto en otro programa.",
-                        "Couldn't rename: something inside is open in another program.",
-                        "Não foi possível renomear: algo dentro está aberto em outro programa."
-                    )
+                    "Couldn't rename: something inside is open in another program."
                     .to_string()
                 })?;
                 for (a, b) in moved {
@@ -602,7 +573,7 @@ impl EditorApp {
                 }
             }
             None => {
-                std::fs::create_dir(&to).map_err(|e| trf!("No se pudo crear la carpeta: {e}", "Couldn't create the folder: {e}", "Não foi possível criar a pasta: {e}"))?;
+                std::fs::create_dir(&to).map_err(|e| format!("Couldn't create the folder: {e}"))?;
                 if !files.is_empty() {
                     self.move_assets(files, &to);
                 }
@@ -625,59 +596,35 @@ impl EditorApp {
                 let used = paths.iter().filter(|p| self.is_used(p)).count();
                 let v = videos(n);
                 let title = match (own, n) {
-                    (0, 1) => tr!("¿Quitar este video de la biblioteca?", "Remove this video from the library?", "Remover este vídeo da biblioteca?").to_string(),
-                    (0, _) => trf!("¿Quitar {v} de la biblioteca?", "Remove {v} from the library?", "Remover {v} da biblioteca?"),
-                    (_, 1) => tr!("¿Eliminar este clip?", "Delete this clip?", "Excluir este clipe?").to_string(),
-                    _ => trf!("¿Eliminar {v}?", "Delete {v}?", "Excluir {v}?"),
+                    (0, 1) => "Remove this video from the library?".to_string(),
+                    (0, _) => format!("Remove {v} from the library?"),
+                    (_, 1) => "Delete this clip?".to_string(),
+                    _ => format!("Delete {v}?"),
                 };
                 let mut lines = Vec::new();
                 let c = fmt_count(own);
                 match (own, own == n) {
                     (0, _) => {}
-                    (1, true) => lines.push(tr!(
-                        "Se manda a la Papelera de reciclaje: si te arrepentís, lo recuperás desde ahí.",
-                        "It goes to the Recycle Bin: if you change your mind, you can restore it from there.",
-                        "Vai para a Lixeira: se você se arrepender, pode recuperá-lo de lá."
-                    )
+                    (1, true) => lines.push("It goes to the Recycle Bin: if you change your mind, you can restore it from there."
                     .to_string()),
-                    (1, false) => lines.push(tr!(
-                        "1 se manda a la Papelera de reciclaje: si te arrepentís, lo recuperás desde ahí.",
-                        "1 goes to the Recycle Bin: if you change your mind, you can restore it from there.",
-                        "1 vai para a Lixeira: se você se arrepender, pode recuperá-lo de lá."
-                    )
+                    (1, false) => lines.push("1 goes to the Recycle Bin: if you change your mind, you can restore it from there."
                     .to_string()),
-                    (_, true) => lines.push(tr!(
-                        "Se mandan a la Papelera de reciclaje: si te arrepentís, los recuperás desde ahí.",
-                        "They go to the Recycle Bin: if you change your mind, you can restore them from there.",
-                        "Vão para a Lixeira: se você se arrepender, pode recuperá-los de lá."
-                    )
+                    (_, true) => lines.push("They go to the Recycle Bin: if you change your mind, you can restore them from there."
                     .to_string()),
-                    (_, false) => lines.push(trf!(
-                        "{c} se mandan a la Papelera de reciclaje: si te arrepentís, los recuperás desde ahí.",
-                        "{c} go to the Recycle Bin: if you change your mind, you can restore them from there.",
-                        "{c} vão para a Lixeira: se você se arrepender, pode recuperá-los de lá."
-                    )),
+                    (_, false) => lines.push(format!("{c} go to the Recycle Bin: if you change your mind, you can restore them from there.")),
                 }
                 if imported > 0 {
                     let c = fmt_count(imported);
                     lines.push(match imported {
-                        1 => tr!(
-                            "El importado solo sale de la lista: el archivo queda donde está.",
-                            "The imported one only leaves the list: the file stays where it is.",
-                            "O importado só sai da lista: o arquivo fica onde está."
-                        )
+                        1 => "The imported one only leaves the list: the file stays where it is."
                         .to_string(),
-                        _ => trf!(
-                            "Los {c} importados solo salen de la lista: los archivos quedan donde están.",
-                            "The {c} imported ones only leave the list: the files stay where they are.",
-                            "Os {c} importados só saem da lista: os arquivos ficam onde estão."
-                        ),
+                        _ => format!("The {c} imported ones only leave the list: the files stay where they are."),
                     });
                 }
                 if used > 0 && own > 0 {
                     lines.push(in_timeline(used, true));
                 }
-                let ok = if own == 0 { tr!("Quitar", "Remove", "Remover") } else { tr!("Eliminar", "Delete", "Excluir") };
+                let ok = if own == 0 { "Remove" } else { "Delete" };
                 confirm(ctx, &title, &lines, ok, &mut action)
             }
             Dialog::DeleteFolder(dir) => {
@@ -685,25 +632,21 @@ impl EditorApp {
                 let inside = library::scan(dir, None, &[]).1;
                 let used = inside.iter().filter(|a| self.is_used(&a.path)).count();
                 let mut lines = vec![if inside.is_empty() {
-                    tr!("Se manda a la Papelera de reciclaje.", "It goes to the Recycle Bin.", "Vai para a Lixeira.").to_string()
+                    "It goes to the Recycle Bin.".to_string()
                 } else {
                     let v = videos(inside.len());
-                    trf!(
-                        "Se manda a la Papelera de reciclaje con {v} adentro: si te arrepentís, la recuperás desde ahí.",
-                        "It goes to the Recycle Bin with {v} inside: if you change your mind, you can restore it from there.",
-                        "Vai para a Lixeira com {v} dentro: se você se arrepender, pode recuperá-la de lá."
-                    )
+                    format!("It goes to the Recycle Bin with {v} inside: if you change your mind, you can restore it from there.")
                 }];
                 if used > 0 {
                     lines.push(in_timeline(used, false));
                 }
-                let title = trf!("¿Eliminar la carpeta «{name}»?", "Delete the folder “{name}”?", "Excluir a pasta “{name}”?");
-                confirm(ctx, &title, &lines, tr!("Eliminar", "Delete", "Excluir"), &mut action)
+                let title = format!("Delete the folder “{name}”?");
+                confirm(ctx, &title, &lines, "Delete", &mut action)
             }
             Dialog::Name { name, rename, error, .. } => {
-                let title = if rename.is_some() { tr!("Cambiar el nombre", "Rename", "Renomear") } else { new_folder() };
-                let ok = if rename.is_some() { tr!("Guardar", "Save", "Salvar") } else { tr!("Crear", "Create", "Criar") };
-                let sub = tr!("Se crea dentro de la carpeta de clips.", "It's created inside the clips folder.", "É criada dentro da pasta de clipes.");
+                let title = if rename.is_some() { "Rename" } else { new_folder() };
+                let ok = if rename.is_some() { "Save" } else { "Create" };
+                let sub = "It's created inside the clips folder.";
                 modal(ctx, "lib_name", title, sub, 460.0, |ui| {
                     modal_body(ui, |ui| {
                         let r = ui.add(egui::TextEdit::singleline(name).desired_width(f32::INFINITY).margin(egui::vec2(10.0, 7.0)).font(FontId::proportional(14.0)));
@@ -722,7 +665,7 @@ impl EditorApp {
                             if button_sized(ui, ok, Kind::Primary, egui::vec2(120.0, 38.0)).clicked() {
                                 action = 2;
                             }
-                            if button_sized(ui, tr!("Cancelar", "Cancel", "Cancelar"), Kind::Secondary, egui::vec2(120.0, 38.0)).clicked() {
+                            if button_sized(ui, "Cancel", Kind::Secondary, egui::vec2(120.0, 38.0)).clicked() {
                                 action = 1;
                             }
                         });
@@ -748,11 +691,11 @@ impl EditorApp {
 }
 
 fn add_label() -> &'static str {
-    tr!("Agregar a la línea de tiempo", "Add to the timeline", "Adicionar à linha do tempo")
+    "Add to the timeline"
 }
 
 fn new_folder() -> &'static str {
-    tr!("Carpeta nueva", "New folder", "Nova pasta")
+    "New folder"
 }
 
 /// "Está en la línea de tiempo…" para `used` videos que se van a quitar de ahí (`these`: de los elegidos;
@@ -760,23 +703,11 @@ fn new_folder() -> &'static str {
 fn in_timeline(used: usize, these: bool) -> String {
     let c = fmt_count(used);
     match (used, these) {
-        (1, true) => tr!(
-            "Está en la línea de tiempo: se va a quitar de ahí.",
-            "It's on the timeline: it'll be removed from there.",
-            "Está na linha do tempo: vai ser removido de lá."
-        )
+        (1, true) => "It's on the timeline: it'll be removed from there."
         .to_string(),
-        (1, false) => tr!(
-            "Uno está en la línea de tiempo: se va a quitar de ahí.",
-            "One is on the timeline: it'll be removed from there.",
-            "Um está na linha do tempo: vai ser removido de lá."
-        )
+        (1, false) => "One is on the timeline: it'll be removed from there."
         .to_string(),
-        _ => trf!(
-            "{c} están en la línea de tiempo: se van a quitar de ahí.",
-            "{c} are on the timeline: they'll be removed from there.",
-            "{c} estão na linha do tempo: vão ser removidos de lá."
-        ),
+        _ => format!("{c} are on the timeline: they'll be removed from there."),
     }
 }
 
@@ -793,7 +724,7 @@ fn confirm(ctx: &egui::Context, title: &str, lines: &[String], ok: &str, action:
                 if button_sized(ui, ok, Kind::Danger, egui::vec2(120.0, 38.0)).clicked() {
                     *action = 2;
                 }
-                if button_sized(ui, tr!("Cancelar", "Cancel", "Cancelar"), Kind::Secondary, egui::vec2(120.0, 38.0)).clicked() {
+                if button_sized(ui, "Cancel", Kind::Secondary, egui::vec2(120.0, 38.0)).clicked() {
                     *action = 1;
                 }
             });

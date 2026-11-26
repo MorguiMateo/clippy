@@ -21,7 +21,6 @@ use super::status::{self, Status};
 use super::mode::{Mode, Window, TRAY_CLASS, TRAY_MUTEX, WM_HOTKEY_SUSPEND, WM_REC_EVENT, WM_RELOAD, WM_TRAY, WM_UPDATE};
 use super::update;
 use crate::config::{self, Config, GlobalAction};
-use crate::i18n::{tr, trf};
 use crate::log::log;
 use crate::record::recorder::{Event, Notify, Recorder};
 use crate::ui_kit::{icon, sound, theme::fmt_secs, window::open_folder};
@@ -116,12 +115,8 @@ pub fn run(background: bool) {
             with_app(|a| {
                 let secs = fmt_secs(cfg.seconds);
                 a.balloon(
-                    tr!("Clippy está grabando", "Clippy is recording", "O Clippy está gravando"),
-                    &trf!(
-                        "Apretá {key} para guardar los últimos {secs}. Clippy queda acá, en la bandeja.",
-                        "Press {key} to save the last {secs}. Clippy stays here, in the tray.",
-                        "Aperte {key} para salvar os últimos {secs}. O Clippy fica aqui, na bandeja."
-                    ),
+                    "Clippy is recording",
+                    &format!("Press {key} to save the last {secs}. Clippy stays here, in the tray."),
                     false,
                 )
             });
@@ -183,12 +178,8 @@ impl App {
             if !failed.is_empty() {
                 let k = failed.join(", ");
                 self.balloon(
-                    tr!("Tecla ocupada", "Key in use", "Tecla em uso"),
-                    &trf!(
-                        "Otro programa está usando {k}. Elegí otra en Ajustes.",
-                        "Another program is using {k}. Pick another one in Settings.",
-                        "Outro programa está usando {k}. Escolha outra nas Configurações."
-                    ),
+                    "Key in use",
+                    &format!("Another program is using {k}. Pick another one in Settings."),
                     true,
                 );
             }
@@ -229,17 +220,17 @@ impl App {
 
     fn tip(&self) -> String {
         if let Some(e) = &self.status.error {
-            return trf!("Clippy · error: {e}", "Clippy · error: {e}", "Clippy · erro: {e}");
+            return format!("Clippy · error: {e}");
         }
         if self.cfg.enabled {
             let (key, secs) = (hotkey_name(self.cfg.hotkey_vk, self.cfg.hotkey_mods), fmt_secs(self.cfg.seconds));
-            let mut t = trf!("Clippy · grabando · {key} guarda {secs}", "Clippy · recording · {key} saves {secs}", "Clippy · gravando · {key} salva {secs}");
+            let mut t = format!("Clippy · recording · {key} saves {secs}");
             if let Some(g) = &self.game {
-                t.push_str(&trf!(" · juego: {g}", " · game: {g}", " · jogo: {g}"));
+                t.push_str(&format!(" · game: {g}"));
             }
             t
         } else {
-            tr!("Clippy · pausado", "Clippy · paused", "Clippy · pausado").into()
+            "Clippy · paused".into()
         }
     }
 
@@ -307,7 +298,7 @@ impl App {
                 self.tray(NIM_MODIFY);
             }
             Event::Saved(_) => {} // el sonido lo reproduce la grabadora al instante
-            Event::SaveFailed(e) => self.balloon(tr!("No se pudo guardar el clip", "Couldn't save the clip", "Não foi possível salvar o clipe"), &e, true),
+            Event::SaveFailed(e) => self.balloon("Couldn't save the clip", &e, true),
             Event::Error(e) => {
                 // El globo sale al pasar de grabar a error, no si cambia el motivo mientras se reintenta.
                 let new = self.status.error.is_none();
@@ -315,8 +306,8 @@ impl App {
                 self.tray(NIM_MODIFY);
                 if new {
                     self.balloon(
-                        tr!("Clippy no puede grabar", "Clippy can't record", "O Clippy não consegue gravar"),
-                        &trf!("{e}\nSe reintenta solo.", "{e}\nIt retries by itself.", "{e}\nEle tenta de novo sozinho."),
+                        "Clippy can't record",
+                        &format!("{e}\nIt retries by itself."),
                         true,
                     );
                 }
@@ -359,20 +350,20 @@ fn show_menu(hwnd: HWND) {
         let Ok(menu) = CreatePopupMenu() else { return };
         // El editor va primero y en negrita: es lo que más se usa después de grabar.
         let item = |s: &str| HSTRING::from(s);
-        let _ = AppendMenuW(menu, MF_STRING, ID_EDITOR, &item(tr!("Abrir editor de clips", "Open clip editor", "Abrir editor de clipes")));
+        let _ = AppendMenuW(menu, MF_STRING, ID_EDITOR, &item("Open clip editor"));
         let _ = SetMenuDefaultItem(menu, ID_EDITOR as u32, 0);
-        let save_label = HSTRING::from(trf!("Guardar clip ahora\t{key}", "Save clip now\t{key}", "Salvar clipe agora\t{key}"));
+        let save_label = HSTRING::from(format!("Save clip now\t{key}"));
         let save_flags = if enabled { MF_STRING } else { MF_STRING | MF_GRAYED };
         let _ = AppendMenuW(menu, save_flags, ID_SAVE, &save_label);
-        let _ = AppendMenuW(menu, MF_STRING, ID_FOLDER, &item(tr!("Abrir carpeta de clips", "Open clips folder", "Abrir pasta de clipes")));
+        let _ = AppendMenuW(menu, MF_STRING, ID_FOLDER, &item("Open clips folder"));
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
         let check = if enabled { MF_CHECKED } else { MF_UNCHECKED };
-        let _ = AppendMenuW(menu, MF_STRING | check, ID_TOGGLE, &item(tr!("Grabando", "Recording", "Gravando")));
+        let _ = AppendMenuW(menu, MF_STRING | check, ID_TOGGLE, &item("Recording"));
         let mic = with_app(|a| a.cfg.mic_audio).unwrap_or(false);
-        let _ = AppendMenuW(menu, MF_STRING | if mic { MF_CHECKED } else { MF_UNCHECKED }, ID_MIC, &item(tr!("Micrófono", "Microphone", "Microfone")));
-        let _ = AppendMenuW(menu, MF_STRING, ID_SETTINGS, &item(tr!("Abrir Clippy", "Open Clippy", "Abrir Clippy")));
+        let _ = AppendMenuW(menu, MF_STRING | if mic { MF_CHECKED } else { MF_UNCHECKED }, ID_MIC, &item("Microphone"));
+        let _ = AppendMenuW(menu, MF_STRING, ID_SETTINGS, &item("Open Clippy"));
         let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
-        let _ = AppendMenuW(menu, MF_STRING, ID_EXIT, &item(tr!("Salir", "Quit", "Sair")));
+        let _ = AppendMenuW(menu, MF_STRING, ID_EXIT, &item("Quit"));
 
         let mut pt = POINT::default();
         let _ = GetCursorPos(&mut pt);
@@ -457,12 +448,8 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
             if let Some((v, _)) = update::available() {
                 with_app(|a| {
                     a.balloon(
-                        tr!("Hay una versión nueva de Clippy", "A new version of Clippy is out", "Há uma nova versão do Clippy"),
-                        &trf!(
-                            "La versión {v} está lista. Tocá acá para actualizar.",
-                            "Version {v} is ready. Click here to update.",
-                            "A versão {v} está pronta. Clique aqui para atualizar."
-                        ),
+                        "A new version of Clippy is out",
+                        &format!("Version {v} is ready. Click here to update."),
                         false,
                     )
                 });

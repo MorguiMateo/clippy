@@ -16,7 +16,6 @@ use windows::Win32::Media::MediaFoundation::*;
 use windows::Win32::System::Com::{CoCreateInstance, CoTaskMemFree, CLSCTX_INPROC_SERVER};
 
 use crate::config::{fit_short, Codec};
-use crate::i18n::tr;
 use crate::log::log;
 
 #[derive(Clone)]
@@ -148,11 +147,7 @@ impl Encoder {
             log("sin encoder de video en la placa: se codifica con el procesador");
             let mft: IMFTransform = CoCreateInstance(&CLSID_MSH264EncoderMFT, None, CLSCTX_INPROC_SERVER).map_err(|e| {
                 log(&format!("no está el encoder H.264 de Windows: {e}"));
-                anyhow!(tr!(
-                    "Windows no tiene el codificador de video H.264. Si es una edición N de Windows, instalá el «Paquete de características multimedia» desde Configuración > Aplicaciones > Características opcionales.",
-                    "Windows has no H.264 video encoder. If this is an N edition of Windows, install the “Media Feature Pack” from Settings > Apps > Optional features.",
-                    "O Windows não tem o codificador de vídeo H.264. Se for uma edição N do Windows, instale o “Pacote de Recursos de Mídia” em Configurações > Aplicativos > Recursos opcionais."
-                ))
+                anyhow!("Windows has no H.264 video encoder. If this is an N edition of Windows, install the “Media Feature Pack” from Settings > Apps > Optional features.")
             })?;
             let (w, h) = fit_short((w, h), CPU_MAX_SHORT);
             let path = Path::Cpu(Readback::new(device, w, h)?);

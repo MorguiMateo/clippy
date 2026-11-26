@@ -7,7 +7,6 @@ use std::time::{Duration, Instant};
 use eframe::egui::text::LayoutJob;
 use eframe::egui::{self, Align, Align2, Color32, CursorIcon, FontId, Layout, Pos2, Rect, RichText, Sense, Shape, Stroke, Vec2};
 
-use crate::i18n::{tr, trf};
 use crate::ui_kit::theme::*;
 use super::media::{Frame, Ratio, Sizing};
 use super::panels::SEEK_EVERY;
@@ -62,8 +61,8 @@ pub(super) struct CropEdit {
 /// Proporciones del recorte: libre, la del lienzo y algunas fijas.
 fn crop_shapes(canvas: (f32, f32)) -> [(&'static str, Option<f32>); 5] {
     [
-        (tr!("Libre", "Free", "Livre"), None),
-        (tr!("Lienzo", "Canvas", "Tela"), Some(canvas.0 / canvas.1)),
+        ("Free", None),
+        ("Canvas", Some(canvas.0 / canvas.1)),
         ("16:9", Some(16.0 / 9.0)),
         ("9:16", Some(9.0 / 16.0)),
         ("1:1", Some(1.0)),
@@ -117,8 +116,8 @@ impl EditorApp {
         let canvas = Rect::from_center_size(area.center(), Vec2::new(cw, ch) * scale);
         p.rect_filled(canvas, 6.0, Color32::BLACK);
         if self.is_empty() {
-            p.text(area.center() - egui::vec2(0.0, 12.0), Align2::CENTER_CENTER, tr!("Tu video aparece acá", "Your video shows up here", "Seu vídeo aparece aqui"), FontId::proportional(20.0), TEXT);
-            p.text(area.center() + egui::vec2(0.0, 16.0), Align2::CENTER_CENTER, tr!("Elegí un clip de la biblioteca para empezar", "Pick a clip from the library to start", "Escolha um clipe da biblioteca para começar"), FontId::proportional(14.0), MUTED);
+            p.text(area.center() - egui::vec2(0.0, 12.0), Align2::CENTER_CENTER, "Your video shows up here", FontId::proportional(20.0), TEXT);
+            p.text(area.center() + egui::vec2(0.0, 16.0), Align2::CENTER_CENTER, "Pick a clip from the library to start", FontId::proportional(14.0), MUTED);
             return;
         }
         if let Some(e) = self.preview_error() {
@@ -153,7 +152,7 @@ impl EditorApp {
             }
         });
         let current = RATIOS.iter().find(|r| r.0 == self.ratio).map_or("Original", |r| r.1);
-        let r = button(&mut ui, current, Kind::Secondary).on_hover_text(tr!("Forma del video: horizontal, vertical, cuadrado…", "Video shape: landscape, portrait, square…", "Formato do vídeo: horizontal, vertical, quadrado…"));
+        let r = button(&mut ui, current, Kind::Secondary).on_hover_text("Video shape: landscape, portrait, square…");
         let menu = ui.id().with("ratio_menu");
         if r.clicked() {
             ui.memory_mut(|m| m.toggle_popup(menu));
@@ -164,9 +163,9 @@ impl EditorApp {
             ui.set_min_width(170.0);
             for (ratio, label) in RATIOS {
                 let tip = match (ratio, first) {
-                    (None, Some((w, h))) => trf!("Como el primer clip ({w}×{h})", "Like the first clip ({w}×{h})", "Como o primeiro clipe ({w}×{h})"),
-                    (None, None) => tr!("Como el primer clip", "Like the first clip", "Como o primeiro clipe").to_string(),
-                    (Some((w, h)), _) => trf!("{w} de ancho por {h} de alto", "{w} wide by {h} tall", "{w} de largura por {h} de altura"),
+                    (None, Some((w, h))) => format!("Like the first clip ({w}×{h})"),
+                    (None, None) => "Like the first clip".to_string(),
+                    (Some((w, h)), _) => format!("{w} wide by {h} tall"),
                 };
                 if ui.add(egui::Button::new(label).selected(ratio == self.ratio)).on_hover_text(tip).clicked() {
                     pick = Some(ratio);
@@ -176,7 +175,7 @@ impl EditorApp {
         if let Some(r) = pick {
             self.set_ratio(r);
         }
-        ui.label(RichText::new(tr!("Proporción", "Aspect ratio", "Proporção")).size(13.0).color(MUTED));
+        ui.label(RichText::new("Aspect ratio").size(13.0).color(MUTED));
     }
 
     /// Entra o sale de la pantalla completa (sin clips no hay nada que ver).
@@ -269,7 +268,7 @@ impl EditorApp {
         });
         let mut exit = false;
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            exit = icon_only_button(ui, Glyph::ExitFullscreen, Kind::Ghost, tr!("Salir de pantalla completa (Esc)", "Exit fullscreen (Esc)", "Sair da tela cheia (Esc)")).clicked();
+            exit = icon_only_button(ui, Glyph::ExitFullscreen, Kind::Ghost, "Exit fullscreen (Esc)").clicked();
             let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 40.0), Sense::click_and_drag());
             self.seek_bar(ui, rect, &resp);
         });
@@ -360,7 +359,7 @@ impl EditorApp {
         let p = ui.painter_at(area);
         let layer = self.layers.iter().find(|l| l.piece() == c.id);
         let Some(l) = layer else {
-            p.text(area.center(), Align2::CENTER_CENTER, tr!("Llevá el cursor a un lugar donde se vea este clip", "Move the playhead to where this clip is visible", "Leve o cursor a um ponto onde este clipe apareça"), FontId::proportional(14.0), MUTED);
+            p.text(area.center(), Align2::CENTER_CENTER, "Move the playhead to where this clip is visible", FontId::proportional(14.0), MUTED);
             self.crop_bar(ui, bar, c, (16.0, 9.0));
             return;
         };
@@ -449,10 +448,10 @@ impl EditorApp {
         let (mut done, mut cancel) = ui.input(|i| (i.key_pressed(egui::Key::Enter), i.key_pressed(egui::Key::Escape)));
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = 8.0;
-            done |= button(ui, tr!("Listo", "Done", "Pronto"), Kind::Secondary).on_hover_text("Enter").clicked();
-            cancel |= button(ui, tr!("Cancelar", "Cancel", "Cancelar"), Kind::Ghost).on_hover_text("Esc").clicked();
-            if button(ui, tr!("Ver todo", "Show all", "Ver tudo"), Kind::Ghost)
-                .on_hover_text(tr!("Volver a la imagen entera", "Back to the whole picture", "Voltar à imagem inteira"))
+            done |= button(ui, "Done", Kind::Secondary).on_hover_text("Enter").clicked();
+            cancel |= button(ui, "Cancel", Kind::Ghost).on_hover_text("Esc").clicked();
+            if button(ui, "Show all", Kind::Ghost)
+                .on_hover_text("Back to the whole picture")
                 .clicked()
             {
                 c.rect = [0.0, 0.0, 1.0, 1.0];

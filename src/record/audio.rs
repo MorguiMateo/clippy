@@ -26,7 +26,6 @@ use windows::Win32::System::Threading::{
 };
 use windows::Win32::Foundation::WAIT_OBJECT_0;
 
-use crate::i18n::tr;
 use crate::mf::{frames_at, RATE};
 
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -349,11 +348,7 @@ unsafe fn activate_process(pid: u32, include: bool) -> Result<IAudioClient> {
     )?;
     // Esto corre en el hilo de video: si Windows no contesta enseguida, se sigue sin este audio
     // (se reintenta en unos segundos) en vez de congelar la grabación.
-    rx.recv_timeout(Duration::from_secs(1)).map_err(|_| anyhow!(tr!(
-        "la captura de audio por proceso no respondió",
-        "per-process audio capture didn't respond",
-        "a captura de áudio por processo não respondeu"
-    )))?;
+    rx.recv_timeout(Duration::from_secs(1)).map_err(|_| anyhow!("per-process audio capture didn't respond"))?;
     let mut hr = windows::core::HRESULT(0);
     let mut unk = None;
     op.GetActivateResult(&mut hr, &mut unk)?;
@@ -392,7 +387,7 @@ pub fn capture_devices() -> Vec<(String, String)> {
                 .OpenPropertyStore(STGM_READ)
                 .and_then(|ps| ps.GetValue(&PKEY_Device_FriendlyName))
                 .map(|p| p.to_string())
-                .unwrap_or_else(|_| tr!("Micrófono", "Microphone", "Microfone").into());
+                .unwrap_or_else(|_| "Microphone".into());
             v.push((id, name));
         }
     }

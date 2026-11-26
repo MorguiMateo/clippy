@@ -5,7 +5,6 @@ use std::collections::BTreeMap;
 use eframe::egui::{self, Align, Layout, RichText};
 use serde::{Deserialize, Serialize};
 
-use crate::i18n::{tr, trf};
 use crate::ui_kit::theme::*;
 
 /// Combinación de teclas del editor (tecla con el nombre de egui, ej. "Space", "D", "ArrowLeft").
@@ -81,10 +80,10 @@ pub const ALL: [Act; 24] = [
 /// Grupos de la lista de atajos, en el idioma actual.
 pub fn groups() -> [&'static str; 4] {
     [
-        tr!("Reproducción", "Playback", "Reprodução"),
-        tr!("Edición", "Editing", "Edição"),
-        tr!("Vista", "View", "Visualização"),
-        tr!("Archivo", "File", "Arquivo"),
+        "Playback",
+        "Editing",
+        "View",
+        "File",
     ]
 }
 
@@ -134,30 +133,30 @@ impl Act {
 
     pub fn label(self) -> &'static str {
         match self {
-            Act::PlayPause => tr!("Reproducir / pausar", "Play / pause", "Reproduzir / pausar"),
-            Act::PrevFrame => tr!("Cuadro anterior", "Previous frame", "Quadro anterior"),
-            Act::NextFrame => tr!("Cuadro siguiente", "Next frame", "Próximo quadro"),
-            Act::Back => tr!("Retroceder 1 segundo", "Back 1 second", "Voltar 1 segundo"),
-            Act::Forward => tr!("Avanzar 1 segundo", "Forward 1 second", "Avançar 1 segundo"),
-            Act::ToStart => tr!("Ir al inicio", "Go to start", "Ir para o início"),
-            Act::ToEnd => tr!("Ir al final", "Go to end", "Ir para o final"),
-            Act::Split => tr!("Dividir en el cursor", "Split at playhead", "Dividir no cursor"),
-            Act::Duplicate => tr!("Duplicar clip", "Duplicate clip", "Duplicar clipe"),
-            Act::Delete => tr!("Eliminar clip", "Delete clip", "Excluir clipe"),
-            Act::Freeze => tr!("Congelar el cuadro del cursor", "Freeze frame at playhead", "Congelar o quadro do cursor"),
-            Act::Marker => tr!("Poner o sacar un marcador", "Add or remove a marker", "Pôr ou tirar um marcador"),
-            Act::MuteClip => tr!("Silenciar o activar el sonido del clip", "Mute or unmute the clip", "Silenciar ou ativar o som do clipe"),
-            Act::Link => tr!("Separar o unir el audio y el video", "Unlink or link audio and video", "Separar ou unir áudio e vídeo"),
-            Act::Magnet => tr!("Imán: pegar los clips solos", "Magnet: snap clips together", "Ímã: grudar os clipes sozinhos"),
-            Act::Undo => tr!("Deshacer", "Undo", "Desfazer"),
-            Act::Redo => tr!("Rehacer", "Redo", "Refazer"),
-            Act::ZoomIn => tr!("Acercar línea de tiempo", "Zoom in timeline", "Aproximar linha do tempo"),
-            Act::ZoomOut => tr!("Alejar línea de tiempo", "Zoom out timeline", "Afastar linha do tempo"),
-            Act::ZoomFit => tr!("Ver toda la línea de tiempo", "Fit whole timeline", "Ver toda a linha do tempo"),
-            Act::Fullscreen => tr!("Pantalla completa", "Fullscreen", "Tela cheia"),
-            Act::Import => tr!("Importar videos", "Import videos", "Importar vídeos"),
-            Act::Export => tr!("Exportar video", "Export video", "Exportar vídeo"),
-            Act::Shortcuts => tr!("Ayuda y atajos", "Help and shortcuts", "Ajuda e atalhos"),
+            Act::PlayPause => "Play / pause",
+            Act::PrevFrame => "Previous frame",
+            Act::NextFrame => "Next frame",
+            Act::Back => "Back 1 second",
+            Act::Forward => "Forward 1 second",
+            Act::ToStart => "Go to start",
+            Act::ToEnd => "Go to end",
+            Act::Split => "Split at playhead",
+            Act::Duplicate => "Duplicate clip",
+            Act::Delete => "Delete clip",
+            Act::Freeze => "Freeze frame at playhead",
+            Act::Marker => "Add or remove a marker",
+            Act::MuteClip => "Mute or unmute the clip",
+            Act::Link => "Unlink or link audio and video",
+            Act::Magnet => "Magnet: snap clips together",
+            Act::Undo => "Undo",
+            Act::Redo => "Redo",
+            Act::ZoomIn => "Zoom in timeline",
+            Act::ZoomOut => "Zoom out timeline",
+            Act::ZoomFit => "Fit whole timeline",
+            Act::Fullscreen => "Fullscreen",
+            Act::Import => "Import videos",
+            Act::Export => "Export video",
+            Act::Shortcuts => "Help and shortcuts",
         }
     }
 
@@ -212,20 +211,20 @@ pub fn binding(keys: &Keys, a: Act) -> Combo {
 /// Texto para mostrar una combinación ("Ctrl + D", "Espacio", "Sin asignar").
 pub fn label(c: &Combo) -> String {
     if c.key.is_empty() {
-        return tr!("Sin asignar", "Not set", "Não definido").into();
+        return "Not set".into();
     }
     let key = match c.key.as_str() {
         "Left" => "←",
         "Right" => "→",
         "Up" => "↑",
         "Down" => "↓",
-        "Space" => tr!("Espacio", "Space", "Espaço"),
-        "Delete" => tr!("Supr", "Delete", "Delete"),
-        "Backspace" => tr!("Retroceso", "Backspace", "Backspace"),
-        "Home" => tr!("Inicio", "Home", "Home"),
-        "End" => tr!("Fin", "End", "End"),
-        "PageUp" => tr!("RePág", "Page Up", "Page Up"),
-        "PageDown" => tr!("AvPág", "Page Down", "Page Down"),
+        "Space" => "Space",
+        "Delete" => "Delete",
+        "Backspace" => "Backspace",
+        "Home" => "Home",
+        "End" => "End",
+        "PageUp" => "Page Up",
+        "PageDown" => "Page Down",
         "Escape" => "Esc",
         "Plus" => "+",
         "Minus" => "−",
@@ -302,11 +301,7 @@ impl Editor {
             if other != a && binding(keys, other) == c {
                 keys.insert(other.id().into(), Combo::default());
                 let (name, key) = (other.label(), label(&c));
-                self.note = Some(trf!(
-                    "«{name}» quedó sin tecla porque usaba {key}.",
-                    "“{name}” no longer has a key because it used {key}.",
-                    "“{name}” ficou sem tecla porque usava {key}."
-                ));
+                self.note = Some(format!("“{name}” no longer has a key because it used {key}."));
             }
         }
         if c == a.default_combo() {
@@ -320,7 +315,7 @@ impl Editor {
     pub fn reset(&mut self, keys: &mut Keys) {
         keys.clear();
         self.capturing = None;
-        self.note = Some(tr!("Se restablecieron los atajos originales.", "The original shortcuts were restored.", "Os atalhos originais foram restaurados.").into());
+        self.note = Some("The original shortcuts were restored.".into());
     }
 
     /// Lista de acciones con su tecla, en dos columnas por grupo. Tocar una empieza a esperar la
@@ -334,9 +329,9 @@ impl Editor {
                     // Primero la tecla (a la derecha); el nombre usa lo que sobra y se corta si no entra.
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         let capturing = this.capturing == Some(a);
-                        let text = if capturing { tr!("Apretá una tecla…", "Press a key…", "Aperte uma tecla…").to_string() } else { short(keys, a) };
+                        let text = if capturing { "Press a key…".to_string() } else { short(keys, a) };
                         let kind = if capturing { Kind::Selected } else { Kind::Secondary };
-                        if button_fit(ui, None, &text, kind, egui::vec2(150.0, 30.0)).on_hover_text(tr!("Clic para cambiar · Esc cancela", "Click to change · Esc cancels", "Clique para mudar · Esc cancela")).clicked() {
+                        if button_fit(ui, None, &text, kind, egui::vec2(150.0, 30.0)).on_hover_text("Click to change · Esc cancels").clicked() {
                             this.capturing = if capturing { None } else { Some(a) };
                             this.note = None;
                         }

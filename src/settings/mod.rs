@@ -12,25 +12,16 @@ use crate::app::mode::{close_tray, find_tray, post_tray, Window, WM_HOTKEY_SUSPE
 use crate::app::status::{self, Status};
 use crate::app::update;
 use crate::config::{self, Config, GlobalAction};
-use crate::i18n::{self, tr, trf};
 use crate::record::audio;
 use crate::ui_kit::theme::*;
 use crate::ui_kit::watch::Watcher;
 use crate::ui_kit::window::{maximize_once, single_instance, window_options};
-use pages::page_title;
 
 mod news;
 mod pages;
 
-const LABEL_W: f32 = 168.0;
 /// Ayuda mientras se espera una tecla nueva (Inicio y Atajos).
-fn capture_hint() -> &'static str {
-    tr!(
-        "Esc cancela. Podés combinarla con Ctrl, Shift o Alt.",
-        "Esc cancels. You can combine it with Ctrl, Shift or Alt.",
-        "Esc cancela. Você pode combiná-la com Ctrl, Shift ou Alt."
-    )
-}
+const CAPTURE_HINT: &str = "Esc cancels. You can combine it with Ctrl, Shift or Alt.";
 
 pub fn run() {
     let win = Window::Settings;
@@ -68,6 +59,8 @@ struct SettingsApp {
     /// Carpeta de los clips y las de cada juego, con sus fechas, la última vez que se contaron.
     clips_seen: Vec<(PathBuf, Option<SystemTime>)>,
     mics: Vec<(String, String)>,
+    /// Monitores conectados (nombre de Windows, cómo se muestra), para elegir cuál grabar.
+    monitors: Vec<(String, String)>,
     /// Versión nueva disponible y estado de la descarga.
     update: Option<(String, String)>,
     update_status: Shared<Result<(), String>>,
@@ -92,6 +85,8 @@ struct SettingsApp {
 #[derive(Clone, Copy, PartialEq)]
 enum Page {
     Home,
+    Recording,
+    Audio,
     Keys,
     General,
 }
@@ -116,6 +111,7 @@ impl SettingsApp {
             clips: (0, None),
             clips_seen: Vec::new(),
             mics: audio::capture_devices(),
+            monitors: pages::monitors(),
             update: None,
             update_status: Default::default(),
             updating: false,
@@ -175,9 +171,9 @@ impl SettingsApp {
             return;
         }
         let note = match &*self.check.lock().unwrap() {
-            Some(Ok(None)) => Some(tr!("Tenés la última versión.", "You have the latest version.", "Você tem a versão mais recente.").to_string()),
+            Some(Ok(None)) => Some("You have the latest version.".to_string()),
             Some(Ok(Some(_))) => None,
-            Some(Err(e)) => Some(trf!("No se pudo buscar: {e}", "Couldn't check: {e}", "Não foi possível verificar: {e}")),
+            Some(Err(e)) => Some(format!("Couldn't check: {e}")),
             None => {
                 ctx.request_repaint_after(Duration::from_millis(200));
                 return;
@@ -277,11 +273,7 @@ impl SettingsApp {
                         *v = 0;
                         *m = 0;
                         let (label, key) = (other.label(), hotkey_name(vk, mods));
-                        self.global_note = Some(trf!(
-                            "«{label}» quedó sin tecla porque usaba {key}.",
-                            "“{label}” no longer has a key because it used {key}.",
-                            "“{label}” ficou sem tecla porque usava {key}."
-                        ));
+                        self.global_note = Some(format!("“{label}” no longer has a key because it used {key}."));
                     }
                 }
                 let (v, m) = self.cfg.hotkey_mut(slot);
@@ -306,8 +298,6 @@ impl Drop for SettingsApp {
 impl eframe::App for SettingsApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         maximize_once(ctx, &mut self.maximized, Window::Settings.title());
-        // El idioma se aplica al toque al elegirlo (y si cambia desde afuera, al recargar config.json).
-        i18n::set(self.cfg.language);
         self.poll_outside();
         self.capture_key(ctx);
         self.finish_update(ctx);
@@ -315,7 +305,7 @@ impl eframe::App for SettingsApp {
         egui::SidePanel::left("nav")
             .exact_width(260.0)
             .resizable(false)
-            .frame(egui::Frame::none().fill(CARD).inner_margin(Margin::symmetric(16.0, 18.0)))
+            .frame(egui::Frame::none().fill(CARD).stroke(egui::Stroke::new(1.0_f32, LINE)).inner_margin(Margin::symmetric(16.0, 18.0)))
             .show(ctx, |ui| self.nav(ui));
         egui::CentralPanel::default()
             .frame(egui::Frame::none().fill(BG).inner_margin(Margin::symmetric(36.0, 28.0)))
@@ -325,31 +315,10 @@ impl eframe::App for SettingsApp {
                         ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
                         match self.page {
                             Page::Home => self.home_page(ui),
-                            Page::Keys => {
-                                page_title(
-                                    ui,
-                                    tr!("Atajos", "Shortcuts", "Atalhos"),
-                                    tr!(
-                                        "Teclas que funcionan en cualquier momento, incluso dentro del juego.",
-                                        "Keys that work at any time, even inside the game.",
-                                        "Teclas que funcionam a qualquer momento, até dentro do jogo."
-                                    ),
-                                );
-                                self.global_keys_section(ui);
-                            }
-                            Page::General => {
-                                page_title(
-                                    ui,
-                                    tr!("General", "General", "Geral"),
-                                    tr!(
-                                        "Idioma, inicio con Windows, sonidos y datos de la app.",
-                                        "Language, start with Windows, sounds and app data.",
-                                        "Idioma, iniciar com o Windows, sons e dados do app."
-                                    ),
-                                );
-                                self.general_section(ui);
-                                self.about_section(ui);
-                            }
+                            Page::Recording => self.recording_page(ui),
+                            Page::Audio => self.audio_page(ui),
+                            Page::Keys => self.keys_page(ui),
+                            Page::General => self.general_page(ui),
                         }
                     });
                 });
@@ -370,20 +339,14 @@ impl eframe::App for SettingsApp {
         self.news_modals(ctx);
         if self.confirm_quit {
             let mut quit = false;
-            let title = tr!("¿Salir de Clippy?", "Quit Clippy?", "Sair do Clippy?");
-            let sub = tr!("Deja de grabar y se cierra todo.", "Recording stops and everything closes.", "A gravação para e tudo é fechado.");
+            let title = "Quit Clippy?";
+            let sub = "Recording stops and everything closes.";
             let x = modal(ctx, "quit", title, sub, 480.0, |ui| {
                 modal_body(ui, |ui| {
                     ui.add(
                         egui::Label::new(
-                            RichText::new(tr!(
-                                "Se cierran el editor y esta ventana. Lo que todavía no guardaste como clip se pierde.\n\n\
-                                 Si solo querés cerrar la ventana, usá la X: Clippy sigue grabando en segundo plano.",
-                                "The editor and this window close. Anything you haven't saved as a clip is lost.\n\n\
-                                 If you only want to close the window, use the X: Clippy keeps recording in the background.",
-                                "O editor e esta janela são fechados. O que você ainda não salvou como clipe se perde.\n\n\
-                                 Se quiser só fechar a janela, use o X: o Clippy continua gravando em segundo plano.",
-                            ))
+                            RichText::new("The editor and this window close. Anything you haven't saved as a clip is lost.\n\n\
+                                 If you only want to close the window, use the X: Clippy keeps recording in the background.")
                             .color(MUTED),
                         )
                         .wrap(),
@@ -391,10 +354,10 @@ impl eframe::App for SettingsApp {
                 });
                 modal_footer(ui, |ui| {
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if button_sized(ui, tr!("Salir", "Quit", "Sair"), Kind::Danger, egui::vec2(120.0, 38.0)).clicked() {
+                        if button_sized(ui, "Quit", Kind::Danger, egui::vec2(120.0, 38.0)).clicked() {
                             quit = true;
                         }
-                        if button_sized(ui, tr!("Cancelar", "Cancel", "Cancelar"), Kind::Secondary, egui::vec2(120.0, 38.0)).clicked() {
+                        if button_sized(ui, "Cancel", Kind::Secondary, egui::vec2(120.0, 38.0)).clicked() {
                             self.confirm_quit = false;
                         }
                     });

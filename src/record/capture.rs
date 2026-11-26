@@ -15,7 +15,6 @@ use windows::Win32::Graphics::Gdi::{MonitorFromPoint, HMONITOR, MONITOR_DEFAULTT
 
 use super::cursor::Cursor;
 use super::screen::{self, wide};
-use crate::i18n::tr;
 use crate::log::log;
 
 /// Una duplicación que no se pudo abrir se reintenta enseguida durante `QUICK_FOR` (un juego que cambia el modo
@@ -135,7 +134,7 @@ impl Capture {
         let primary = unsafe { MonitorFromPoint(POINT::default(), MONITOR_DEFAULTTOPRIMARY) };
         let usable = |m: &HMONITOR| !lost_on.contains(m) && all.iter().any(|(_, o)| o.monitor == *m);
         let want = monitor.into_iter().chain([primary]).chain(all.iter().map(|(_, o)| o.monitor)).find(usable).unwrap_or(primary);
-        let mut last = anyhow!(tr!("no se encontró ningún monitor para grabar", "no monitor found to record", "nenhum monitor encontrado para gravar"));
+        let mut last = anyhow!("no monitor found to record");
         for (adapter, out) in all.into_iter().filter(|(_, o)| o.monitor == want) {
             let name = out.name.clone();
             match Self::open_on(adapter, out, lost_on) {

@@ -3,7 +3,6 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-use crate::i18n::{self, tr, Language};
 use crate::log::app_dir;
 
 use windows::Win32::Foundation::HANDLE;
@@ -130,6 +129,9 @@ pub struct Config {
     pub mic_volume: u32,
     pub mic_device: String,
     pub capture_mode: CaptureMode,
+    /// Monitor que se graba ("\\.\DISPLAY2", como lo nombra Windows); vacío = automático (el del juego o el
+    /// de la ventana activa). Si ese monitor no está conectado, también automático.
+    pub monitor: String,
     /// Dibujar el cursor del mouse en el video (apagado por defecto; ver `cursor_on`).
     pub cursor: bool,
     pub sound_on_save: bool,
@@ -142,8 +144,6 @@ pub struct Config {
     /// Atajo global para abrir la carpeta de clips (vk 0 = sin asignar).
     pub folder_vk: u32,
     pub folder_mods: u32,
-    /// Idioma de la interfaz ("auto" = el de Windows).
-    pub language: Language,
 }
 
 /// Atajos globales: funcionan en cualquier momento, incluso dentro del juego.
@@ -170,10 +170,20 @@ impl GlobalAction {
 
     pub fn label(self) -> &'static str {
         match self {
-            GlobalAction::SaveClip => tr!("Guardar clip", "Save clip", "Salvar clipe"),
-            GlobalAction::ToggleRecording => tr!("Pausar / reanudar grabación", "Pause / resume recording", "Pausar / retomar gravação"),
-            GlobalAction::OpenEditor => tr!("Abrir el editor", "Open the editor", "Abrir o editor"),
-            GlobalAction::OpenFolder => tr!("Abrir la carpeta de clips", "Open the clips folder", "Abrir a pasta de clipes"),
+            GlobalAction::SaveClip => "Save clip",
+            GlobalAction::ToggleRecording => "Pause / resume recording",
+            GlobalAction::OpenEditor => "Open the editor",
+            GlobalAction::OpenFolder => "Open the clips folder",
+        }
+    }
+
+    /// Qué hace, para la página de atajos.
+    pub fn about(self) -> &'static str {
+        match self {
+            GlobalAction::SaveClip => "Saves the last seconds as a clip. Always has a key.",
+            GlobalAction::ToggleRecording => "Stops recording in the background and starts again. Paused, nothing can be saved.",
+            GlobalAction::OpenEditor => "Opens the clip editor to trim, join and export your clips.",
+            GlobalAction::OpenFolder => "Opens the folder where your clips are saved in File Explorer.",
         }
     }
 }
@@ -206,7 +216,7 @@ impl Default for Config {
             editor_mods: 0,
             folder_vk: 0,
             folder_mods: 0,
-            language: Language::Auto,
+            monitor: String::new(),
         }
     }
 }
@@ -222,9 +232,10 @@ pub fn fit_short(full: (u32, u32), short: u32) -> (u32, u32) {
 }
 
 impl Config {
-    /// Valores que obligan a reiniciar la captura de video si cambian (se pierde el buffer).
-    pub fn video_params(&self) -> (bool, u32, u32, u32, Codec) {
-        (self.enabled, self.fps, self.bitrate_mbps, self.resolution, self.codec)
+    /// Valores que obligan a reiniciar la captura de video si cambian (se pierde el buffer). El monitor también:
+    /// así el video toma la resolución del monitor elegido.
+    pub fn video_params(&self) -> (bool, u32, u32, u32, Codec, &str) {
+        (self.enabled, self.fps, self.bitrate_mbps, self.resolution, self.codec, &self.monitor)
     }
 
     /// Tamaño del video (pares) para un monitor que se grabaría a `full`, con la resolución elegida.
@@ -336,14 +347,13 @@ pub fn exists() -> bool {
     config_path().exists()
 }
 
-/// Lee config.json y aplica su idioma a este proceso (así cada ventana y la bandeja lo siguen al recargar).
+/// Lee config.json.
 pub fn load() -> Config {
     let mut cfg: Config = std::fs::read_to_string(config_path())
         .ok()
         .and_then(|s| serde_json::from_str(s.trim_start_matches('\u{feff}')).ok())
         .unwrap_or_default();
     cfg.sanitize();
-    i18n::set(cfg.language);
     cfg
 }
 

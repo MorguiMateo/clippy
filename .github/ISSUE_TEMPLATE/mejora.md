@@ -24,4 +24,4 @@ labels: enhancement
 ## Hecho cuando
 
 - [ ]
-- [ ] Textos nuevos en los tres idiomas
+- [ ] Textos nuevos en inglés

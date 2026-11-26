@@ -22,8 +22,7 @@ use super::clock::{now_100ns, Timer};
 use super::convert::Converter;
 use super::encoder::{Bytes, Device, Encoder, Packet};
 use super::track::{self, Input, Track};
-use super::{game, mux};
-use crate::i18n::tr;
+use super::{game, mux, screen};
 use crate::config::{CaptureMode, Config};
 use crate::editor::library::clean_name;
 use crate::log::{file_stamp, log};
@@ -158,7 +157,7 @@ fn thread_main(mut cfg: Config, rx: Receiver<Cmd>, notify: Notify) {
                     Ok(Cmd::Stop) | Err(RecvTimeoutError::Disconnected) => break,
                     Ok(Cmd::Update(c)) => cfg = c,
                     Ok(Cmd::Save(_)) => {
-                        let m = tr!("Clippy no está grabando en este momento", "Clippy isn't recording right now", "O Clippy não está gravando agora");
+                        let m = "Clippy isn't recording right now";
                         log(&format!("guardar: se descarta, {m}"));
                         notify(Event::SaveFailed(m.into()));
                     }
@@ -381,8 +380,10 @@ fn session(
     let begun = std::time::Instant::now();
     let mut game = game::Detector::default();
     game.poll(0);
-    // Qué monitor grabar: el del juego; si no hay juego, el de la ventana activa; si no, el principal.
-    let mut cap = Capture::new(target.monitor.or_else(|| game.monitor()).or_else(game::active_monitor), &target.lost_on)?;
+    // Qué monitor grabar: el elegido en los ajustes; en automático, el del juego; si no hay juego, el de la ventana
+    // activa; si no, el principal.
+    let chosen = screen::find(&cfg.monitor);
+    let mut cap = Capture::new(chosen.or(target.monitor).or_else(|| game.monitor()).or_else(game::active_monitor), &target.lost_on)?;
     cap.set_cursor(cfg.cursor_on());
     let mut size = cfg.video_size((cap.width, cap.height));
     if align {
@@ -430,6 +431,8 @@ fn session(
     notify(Event::Game(au.game.name()));
     let mut game_monitor = target.monitor;
     let mut next_aim = 0i64;
+    // El juego está en el monitor que se graba (se revisa con `next_aim`): con un monitor elegido puede estar en otro.
+    let mut game_on_cap = false;
     // Cuándo controlar la imagen del monitor actual (una vez por cada `Converter`).
     let mut probe_at: Option<i64> = None;
     au.sync(cfg, 0);
@@ -477,16 +480,20 @@ fn session(
         if now >= next_aim {
             next_aim = now + AIM_EVERY;
             // Cuando el juego aparece o se muda de monitor, el video toma la resolución de ese monitor.
-            let gm = au.game.monitor();
+            // Con un monitor elegido se graba siempre ese, y el juego cuenta solo si está ahí.
+            let chosen = screen::find(&cfg.monitor);
+            let game_at = au.game.monitor();
+            let gm = game_at.filter(|m| chosen.is_none_or(|c| c == *m));
             let native = gm.is_some() && gm != game_monitor;
             game_monitor = gm;
-            if let Some(m) = gm.or_else(game::active_monitor) {
+            if let Some(m) = chosen.or(gm).or_else(game::active_monitor) {
                 match cap.aim(m, native) {
                     Aim::Restart => return Ok(End::Restart(m)),
                     Aim::Lost(back) => return Ok(End::Lost { on: m, back }),
                     Aim::Same | Aim::Switched => {}
                 }
             }
+            game_on_cap = game_at == Some(cap.monitor());
             // Un juego adelante manda imágenes todo el tiempo. Si no llega ninguna, la captura quedó trabada (puede
             // pasar al volver de un Alt+Tab con resolución estirada): reabrirla con el mismo dispositivo no alcanza y
             // el video repetiría la última imagen para siempre. Se empieza de nuevo, como al cambiar un ajuste de video.
@@ -509,7 +516,7 @@ fn session(
                 front_since = None;
             }
         }
-        let visible = cfg.capture_mode == CaptureMode::Screen || au.game.visible();
+        let visible = cfg.capture_mode == CaptureMode::Screen || (au.game.visible() && game_on_cap);
         // En "Solo juegos" sin el juego a la vista el video va en negro: no se copia una pantalla que se descartaría.
         // La primera imagen sí hace falta, para preparar la conversión.
         if visible || conv.is_none() {
@@ -655,7 +662,7 @@ fn trim_video(p: &mut VecDeque<Packet>, min_pts: i64) {
 fn save_clip(cfg: &Config, packets: &VecDeque<Packet>, enc: &Encoder, au: &AudioState, now: i64, frame_dur: i64, notify: &Notify) -> bool {
     let started = std::time::Instant::now();
     let keep = cfg.seconds as i64 * 10_000_000;
-    let no_video = || tr!("todavía no hay video en el buffer", "there's no video in the buffer yet", "ainda não há vídeo no buffer");
+    let no_video = || "there's no video in the buffer yet";
     let fail = |m: &str| {
         log(&format!("guardar: se descarta, {m}"));
         notify(Event::SaveFailed(m.into()));

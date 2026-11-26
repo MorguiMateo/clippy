@@ -7,7 +7,6 @@ use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Align, Align2, Color32, CursorIcon, FontId, Layout, Pos2, Rangef, Rect, RichText, Sense, Shape, Stroke, Vec2};
 
-use crate::i18n::{tr, trf};
 use crate::ui_kit::theme::*;
 use crate::ui_kit::window::open_folder;
 use super::shortcuts::Act;
@@ -140,7 +139,7 @@ fn draw_piece(painter: &egui::Painter, p: &Piece, info: Option<&library::Info>, 
     }
     // Etiqueta: en la imagen, y en el sonido solo si va suelto (si no, ya la tiene su pareja).
     if (video || p.link == 0) && r.width() > 70.0 && r.height() >= 22.0 {
-        let how = if p.still() { tr!("  ·  congelado", "  ·  frozen", "  ·  congelado").to_string() } else if p.speed != 1.0 { format!("  ·  {}", fmt_speed(p.speed)) } else { String::new() };
+        let how = if p.still() { "  ·  frozen".to_string() } else if p.speed != 1.0 { format!("  ·  {}", fmt_speed(p.speed)) } else { String::new() };
         let label = format!("{}  ·  {}{how}", library::pretty_name(&p.path), fmt_len(p.len));
         let g = one_line(painter, label, FontId::proportional(11.5), r.width() - 22.0);
         let badge = Rect::from_min_size(r.min + egui::vec2(6.0, 4.0), g.size() + egui::vec2(10.0, 4.0));
@@ -212,9 +211,9 @@ fn draw_wave(painter: &egui::Painter, p: &Piece, info: Option<&library::Info>, a
         }
         Some(_) => {
             clip.hline(ar.x_range(), mid, Stroke::new(1.0_f32, MUTED));
-            note(tr!("Silenciado", "Muted", "Silenciado"));
+            note("Muted");
         }
-        None => note(tr!("Cargando audio…", "Loading audio…", "Carregando áudio…")),
+        None => note("Loading audio…"),
     }
 }
 
@@ -261,26 +260,26 @@ impl EditorApp {
             ui.label(RichText::new("Editor").size(18.0).color(MUTED));
             ui.add_space(24.0);
             ui.add_enabled_ui(!self.undo.is_empty(), |ui| {
-                let tip = format!("{} ({})", tr!("Deshacer", "Undo", "Desfazer"), shortcuts::short(&self.prefs.keys, Act::Undo));
+                let tip = format!("{} ({})", "Undo", shortcuts::short(&self.prefs.keys, Act::Undo));
                 if icon_only_button(ui, Glyph::Undo, Kind::Ghost, &tip).clicked() {
                     self.undo();
                 }
             });
             ui.add_enabled_ui(!self.redo.is_empty(), |ui| {
-                let tip = format!("{} ({})", tr!("Rehacer", "Redo", "Refazer"), shortcuts::short(&self.prefs.keys, Act::Redo));
+                let tip = format!("{} ({})", "Redo", shortcuts::short(&self.prefs.keys, Act::Redo));
                 if icon_only_button(ui, Glyph::Redo, Kind::Ghost, &tip).clicked() {
                     self.redo();
                 }
             });
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                let tip = format!("{} ({})", tr!("Atajos y ayuda", "Shortcuts and help", "Atalhos e ajuda"), shortcuts::short(&self.prefs.keys, Act::Shortcuts));
+                let tip = format!("{} ({})", "Shortcuts and help", shortcuts::short(&self.prefs.keys, Act::Shortcuts));
                 if gear_button(ui).on_hover_text(tip).clicked() {
                     self.open_help(HelpTab::Keys);
                 }
                 ui.add_space(6.0);
                 if let Some(job) = &self.job {
                     let p = job.progress.get();
-                    if button(ui, tr!("Cancelar", "Cancel", "Cancelar"), Kind::Secondary).clicked() {
+                    if button(ui, "Cancel", Kind::Secondary).clicked() {
                         job.progress.cancel.store(true, Ordering::Relaxed);
                     }
                     ui.add(
@@ -288,28 +287,28 @@ impl EditorApp {
                             .desired_width(240.0)
                             .desired_height(32.0)
                             .rounding(6.0)
-                            .text(RichText::new(trf!("Exportando… {:.0}%", "Exporting… {:.0}%", "Exportando… {:.0}%", p * 100.0)).color(BLACK)),
+                            .text(RichText::new(format!("Exporting… {:.0}%", p * 100.0)).color(BLACK)),
                     );
                 } else {
                     let enabled = !self.is_empty();
-                    let r = ui.add_enabled_ui(enabled, |ui| icon_button(ui, Glyph::Export, tr!("Exportar video", "Export video", "Exportar vídeo"), Kind::Primary, egui::vec2(164.0, 36.0))).inner;
+                    let r = ui.add_enabled_ui(enabled, |ui| icon_button(ui, Glyph::Export, "Export video", Kind::Primary, egui::vec2(164.0, 36.0))).inner;
                     if r.clicked() {
                         self.export();
                     }
                     if !enabled {
-                        r.on_disabled_hover_text(tr!("Agregá al menos un clip a la línea de tiempo", "Add at least one clip to the timeline", "Adicione pelo menos um clipe à linha do tempo"));
+                        r.on_disabled_hover_text("Add at least one clip to the timeline");
                     }
                     if let Some((ok, msg, out)) = self.message.clone() {
                         ui.add_space(8.0);
                         ui.scope(|ui| {
                             ui.multiply_opacity(fade);
                             if let Some(out) = out {
-                                if icon_button(ui, Glyph::Folder, tr!("Abrir carpeta", "Open folder", "Abrir pasta"), Kind::Secondary, Vec2::ZERO).clicked() {
+                                if icon_button(ui, Glyph::Folder, "Open folder", Kind::Secondary, Vec2::ZERO).clicked() {
                                     if let Some(d) = out.parent() {
                                         open_folder(d);
                                     }
                                 }
-                                if button(ui, tr!("Ver video", "Watch video", "Ver vídeo"), Kind::Secondary).clicked() {
+                                if button(ui, "Watch video", Kind::Secondary).clicked() {
                                     let _ = std::process::Command::new("explorer").arg(&out).spawn();
                                 }
                             }
@@ -334,12 +333,12 @@ impl EditorApp {
             let third = ui.available_width() / 3.0;
             ui.allocate_ui_with_layout(egui::vec2(third, 40.0), Layout::left_to_right(Align::Center), |ui| {
                 ui.add_enabled_ui(!empty, |ui| {
-                    if icon_button(ui, Glyph::Scissors, tr!("Dividir", "Split", "Dividir"), Kind::Secondary, Vec2::ZERO).on_hover_text(format!("{} ({})", tr!("Cortar en el cursor", "Split at playhead", "Cortar no cursor"), shortcuts::short(&self.prefs.keys, Act::Split))).clicked() {
+                    if icon_button(ui, Glyph::Scissors, "Split", Kind::Secondary, Vec2::ZERO).on_hover_text(format!("{} ({})", "Split at playhead", shortcuts::short(&self.prefs.keys, Act::Split))).clicked() {
                         self.split();
                     }
                 });
                 ui.add_enabled_ui(has_sel, |ui| {
-                    if icon_button(ui, Glyph::Trash, tr!("Eliminar", "Delete", "Excluir"), Kind::Secondary, Vec2::ZERO).on_hover_text(format!("{} ({})", tr!("Eliminar el clip elegido", "Delete the selected clip", "Excluir o clipe escolhido"), shortcuts::short(&self.prefs.keys, Act::Delete))).clicked() {
+                    if icon_button(ui, Glyph::Trash, "Delete", Kind::Secondary, Vec2::ZERO).on_hover_text(format!("{} ({})", "Delete the selected clip", shortcuts::short(&self.prefs.keys, Act::Delete))).clicked() {
                         self.delete_selected();
                     }
                 });
@@ -350,11 +349,11 @@ impl EditorApp {
                     }
                 });
                 ui.add_enabled_ui(!empty, |ui| {
-                    let tip = format!("{} ({})", tr!("Congelar el cuadro del cursor 3 segundos", "Freeze the frame at the playhead for 3 seconds", "Congelar o quadro do cursor por 3 segundos"), shortcuts::short(&self.prefs.keys, Act::Freeze));
+                    let tip = format!("{} ({})", "Freeze the frame at the playhead for 3 seconds", shortcuts::short(&self.prefs.keys, Act::Freeze));
                     if icon_only_button(ui, Glyph::Freeze, Kind::Secondary, &tip).clicked() {
                         self.freeze();
                     }
-                    let tip = format!("{} ({})", tr!("Poner o sacar un marcador en el cursor", "Add or remove a marker at the playhead", "Pôr ou tirar um marcador no cursor"), shortcuts::short(&self.prefs.keys, Act::Marker));
+                    let tip = format!("{} ({})", "Add or remove a marker at the playhead", shortcuts::short(&self.prefs.keys, Act::Marker));
                     if icon_only_button(ui, Glyph::Marker, Kind::Secondary, &tip).clicked() {
                         self.toggle_marker();
                     }
@@ -366,7 +365,7 @@ impl EditorApp {
                 let group = 36.0 + 12.0 + tw;
                 ui.add_space(((third - group) / 2.0).max(0.0));
                 ui.add_enabled_ui(!empty, |ui| {
-                    if play_button(ui, self.playing, 36.0).on_hover_text(format!("{} ({})", tr!("Reproducir / pausar", "Play / pause", "Reproduzir / pausar"), shortcuts::short(&self.prefs.keys, Act::PlayPause))).clicked() {
+                    if play_button(ui, self.playing, 36.0).on_hover_text(format!("{} ({})", "Play / pause", shortcuts::short(&self.prefs.keys, Act::PlayPause))).clicked() {
                         self.toggle_play();
                     }
                 });
@@ -374,10 +373,10 @@ impl EditorApp {
                 ui.label(RichText::new(time).size(15.0).color(TEXT));
             });
             ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), 40.0), Layout::right_to_left(Align::Center), |ui| {
-                if button(ui, tr!("Ajustar", "Fit", "Ajustar"), Kind::Ghost).on_hover_text(Act::ZoomFit.label()).clicked() {
+                if button(ui, "Fit", Kind::Ghost).on_hover_text(Act::ZoomFit.label()).clicked() {
                     self.run_action(Act::ZoomFit);
                 }
-                let tip = format!("{} ({})", tr!("Acercar", "Zoom in", "Aproximar"), shortcuts::short(&self.prefs.keys, Act::ZoomIn));
+                let tip = format!("{} ({})", "Zoom in", shortcuts::short(&self.prefs.keys, Act::ZoomIn));
                 if icon_only_button(ui, Glyph::Plus, Kind::Ghost, &tip).clicked() {
                     self.run_action(Act::ZoomIn);
                 }
@@ -386,7 +385,7 @@ impl EditorApp {
                 if ui.add(egui::Slider::new(&mut zoom, 1.0..=ZOOM_MAX).logarithmic(true).show_value(false)).changed() {
                     self.zoom_to = Some((zoom, None));
                 }
-                let tip = format!("{} ({})", tr!("Alejar", "Zoom out", "Afastar"), shortcuts::short(&self.prefs.keys, Act::ZoomOut));
+                let tip = format!("{} ({})", "Zoom out", shortcuts::short(&self.prefs.keys, Act::ZoomOut));
                 if icon_only_button(ui, Glyph::Minus, Kind::Ghost, &tip).clicked() {
                     self.run_action(Act::ZoomOut);
                 }
@@ -395,13 +394,9 @@ impl EditorApp {
                 let magnet = self.prefs.magnet;
                 let key = shortcuts::short(&self.prefs.keys, Act::Magnet);
                 let tip = if magnet {
-                    trf!("Imán prendido: los clips se pegan solos ({key})", "Magnet on: clips snap together ({key})", "Ímã ligado: os clipes grudam sozinhos ({key})")
+                    format!("Magnet on: clips snap together ({key})")
                 } else {
-                    trf!(
-                        "Imán apagado: los clips quedan donde los soltás y, si se superponen, se funden ({key})",
-                        "Magnet off: clips stay where you drop them and, if they overlap, they crossfade ({key})",
-                        "Ímã desligado: os clipes ficam onde você os solta e, se se sobrepõem, se fundem ({key})"
-                    )
+                    format!("Magnet off: clips stay where you drop them and, if they overlap, they crossfade ({key})")
                 };
                 if icon_only_button(ui, Glyph::Magnet, if magnet { Kind::Secondary } else { Kind::Ghost }, &tip).clicked() {
                     self.run_action(Act::Magnet);
@@ -454,15 +449,15 @@ impl EditorApp {
                 let c = self.tracks[ti].clips[i].curves;
                 if fades[0].1 { c.1 } else { c.0 }
             });
-            ui.menu_button(tr!("Curva del fundido", "Fade curve", "Curva da transição"), |ui| {
+            ui.menu_button("Fade curve", |ui| {
                 for (c, label, tip) in [
                     (
                         Curve::Even,
-                        tr!("Pareja", "Equal power", "Uniforme"),
-                        tr!("Al cruzarse dos sonidos el volumen no baja", "The volume doesn't dip when two sounds cross", "O volume não cai quando dois sons se cruzam"),
+                        "Equal power",
+                        "The volume doesn't dip when two sounds cross",
                     ),
-                    (Curve::Linear, tr!("Lineal", "Linear", "Linear"), tr!("En línea recta", "In a straight line", "Em linha reta")),
-                    (Curve::Smooth, tr!("Suave", "Smooth", "Suave"), tr!("Arranca y termina despacio", "Starts and ends slowly", "Começa e termina devagar")),
+                    (Curve::Linear, "Linear", "In a straight line"),
+                    (Curve::Smooth, "Smooth", "Starts and ends slowly"),
                 ] {
                     if ui.add(egui::Button::new(label).selected(current == Some(c))).on_hover_text(tip).clicked() {
                         self.set_curve(fades, c);
@@ -472,15 +467,15 @@ impl EditorApp {
             });
             ui.separator();
         }
-        let away = tr!("Llevá el cursor sobre el clip", "Move the playhead over the clip", "Leve o cursor até o clipe");
-        item(ui, Act::Split, tr!("Dividir", "Split", "Dividir"), at_cursor, away);
-        item(ui, Act::Duplicate, tr!("Duplicar", "Duplicate", "Duplicar"), true, "");
+        let away = "Move the playhead over the clip";
+        item(ui, Act::Split, "Split", at_cursor, away);
+        item(ui, Act::Duplicate, "Duplicate", true, "");
         let video = self.selected_video().is_some();
         if video && !p.still() {
-            item(ui, Act::Freeze, tr!("Congelar cuadro", "Freeze frame", "Congelar quadro"), at_cursor, away);
+            item(ui, Act::Freeze, "Freeze frame", at_cursor, away);
         }
         if !p.still() {
-            ui.menu_button(tr!("Velocidad", "Speed", "Velocidade"), |ui| {
+            ui.menu_button("Speed", |ui| {
                 for s in SPEEDS {
                     if ui.add(egui::Button::new(fmt_speed(s)).selected(p.speed == s)).clicked() {
                         self.push_undo();
@@ -491,16 +486,16 @@ impl EditorApp {
             });
         }
         if video {
-            ui.menu_button(tr!("Imagen", "Picture", "Imagem"), |ui| {
-                if ui.button(tr!("Girar a la derecha", "Rotate right", "Girar para a direita")).clicked() {
+            ui.menu_button("Picture", |ui| {
+                if ui.button("Rotate right").clicked() {
                     self.edit_frame(|f| f.turns = (f.turns + 1) % 4);
                     ui.close_menu();
                 }
-                if ui.button(tr!("Espejo", "Mirror", "Espelhar")).clicked() {
+                if ui.button("Mirror").clicked() {
                     self.edit_frame(|f| f.flip = !f.flip);
                     ui.close_menu();
                 }
-                if ui.button(tr!("Recortar…", "Crop…", "Recortar…")).clicked() {
+                if ui.button("Crop…").clicked() {
                     self.start_crop();
                     ui.close_menu();
                 }
@@ -508,14 +503,14 @@ impl EditorApp {
         }
         if let Some((ta, ia)) = self.selected_audio().filter(|_| !p.still()) {
             let muted = self.tracks[ta].clips[ia].muted;
-            let label = if muted { tr!("Activar el sonido", "Unmute", "Ativar o som") } else { tr!("Silenciar", "Mute", "Silenciar") };
+            let label = if muted { "Unmute" } else { "Mute" };
             item(ui, Act::MuteClip, label, true, "");
         }
         if self.can_link() {
             item(ui, Act::Link, self.link_label(), true, "");
         }
         ui.separator();
-        item(ui, Act::Delete, tr!("Eliminar", "Delete", "Excluir"), true, "");
+        item(ui, Act::Delete, "Delete", true, "");
         if let Some(act) = run {
             self.run_action(act);
         }
@@ -525,7 +520,7 @@ impl EditorApp {
     /// y oírla. Con el botón derecho sobre una pista se la quita.
     fn track_headers(&mut self, ui: &mut egui::Ui, g: Rect) {
         let size = egui::vec2(GUTTER - 10.0, RULER_H - 2.0);
-        let r = ui.put(Rect::from_min_size(g.min + egui::vec2(0.0, 1.0), size), |ui: &mut egui::Ui| icon_button(ui, Glyph::Plus, tr!("Pista", "Track", "Faixa"), Kind::Ghost, size));
+        let r = ui.put(Rect::from_min_size(g.min + egui::vec2(0.0, 1.0), size), |ui: &mut egui::Ui| icon_button(ui, Glyph::Plus, "Track", Kind::Ghost, size));
         let menu = ui.id().with("add_track");
         if r.clicked() {
             ui.memory_mut(|m| m.toggle_popup(menu));
@@ -534,14 +529,14 @@ impl EditorApp {
         egui::popup_below_widget(ui, menu, &r, egui::PopupCloseBehavior::CloseOnClick, |ui| {
             ui.set_min_width(150.0);
             for (kind, label) in [
-                (TrackKind::Video, tr!("Pista de video", "Video track", "Faixa de vídeo")),
-                (TrackKind::Audio, tr!("Pista de audio", "Audio track", "Faixa de áudio")),
+                (TrackKind::Video, "Video track"),
+                (TrackKind::Audio, "Audio track"),
             ] {
                 let b = ui.add_enabled(self.count(kind) < MAX_TRACKS, egui::Button::new(label));
                 if b.clicked() {
                     add = Some(kind);
                 }
-                b.on_disabled_hover_text(trf!("Hasta {MAX_TRACKS} pistas de cada tipo", "Up to {MAX_TRACKS} tracks of each kind", "Até {MAX_TRACKS} faixas de cada tipo"));
+                b.on_disabled_hover_text(format!("Up to {MAX_TRACKS} tracks of each kind"));
             }
         });
         // Qué tocaron: (pista, false = ocultar o silenciar, true = quitar).
@@ -553,8 +548,8 @@ impl EditorApp {
             let removable = t.kind == TrackKind::Audio || !one_video;
             ui.interact(row, ui.id().with(("track", t.id)), Sense::click()).context_menu(|ui| {
                 let b = ui
-                    .add_enabled(removable, egui::Button::new(tr!("Quitar pista", "Remove track", "Remover faixa")))
-                    .on_disabled_hover_text(tr!("Siempre queda al menos una pista de video", "There's always at least one video track", "Sempre fica pelo menos uma faixa de vídeo"));
+                    .add_enabled(removable, egui::Button::new("Remove track"))
+                    .on_disabled_hover_text("There's always at least one video track");
                 if b.clicked() {
                     act = Some((ti, true));
                     ui.close_menu();
@@ -565,15 +560,15 @@ impl EditorApp {
                 TrackKind::Video => (
                     Glyph::Eye,
                     !t.hidden,
-                    if t.hidden { tr!("Mostrar la pista", "Show the track", "Mostrar a faixa") } else { tr!("Ocultar la pista", "Hide the track", "Ocultar a faixa") },
+                    if t.hidden { "Show the track" } else { "Hide the track" },
                 ),
                 TrackKind::Audio => (
                     Glyph::Speaker,
                     !t.muted,
                     if t.muted {
-                        tr!("Activar el sonido de la pista", "Unmute the track", "Ativar o som da faixa")
+                        "Unmute the track"
                     } else {
-                        tr!("Silenciar la pista", "Mute the track", "Silenciar a faixa")
+                        "Mute the track"
                     },
                 ),
             };
@@ -1002,13 +997,13 @@ impl EditorApp {
             resp.context_menu(|ui| match self.menu.clone() {
                 Menu::Clip { fades } => self.clip_menu(ui, &fades),
                 Menu::Marker(k) => {
-                    if ui.button(tr!("Ir al marcador", "Go to marker", "Ir para o marcador")).clicked() {
+                    if ui.button("Go to marker").clicked() {
                         if let Some(&m) = self.markers.get(k) {
                             self.seek(m);
                         }
                         ui.close_menu();
                     }
-                    if ui.button(tr!("Quitar marcador", "Remove marker", "Remover marcador")).clicked() {
+                    if ui.button("Remove marker").clicked() {
                         if k < self.markers.len() {
                             self.push_undo();
                             self.markers.remove(k);
@@ -1017,7 +1012,7 @@ impl EditorApp {
                     }
                 }
                 Menu::Ruler(t) => {
-                    if ui.button(tr!("Poner un marcador acá", "Add a marker here", "Pôr um marcador aqui")).clicked() {
+                    if ui.button("Add a marker here").clicked() {
                         self.push_undo();
                         self.markers.push(t);
                         self.markers.sort_unstable();
@@ -1069,7 +1064,7 @@ impl EditorApp {
         if self.is_empty() {
             let r = Rect::from_min_max(Pos2::new(x0, ruler.bottom() + LANE_GAP), Pos2::new(rect.right() - PAD, lanes_bottom));
             painter.rect_stroke(r, 8.0, Stroke::new(1.0_f32, CONTROL_HOVER));
-            painter.text(r.center(), Align2::CENTER_CENTER, tr!("Hacé clic en un video de la biblioteca o arrastralo acá", "Click a video in the library or drag it here", "Clique em um vídeo da biblioteca ou arraste-o para cá"), FontId::proportional(14.0), MUTED);
+            painter.text(r.center(), Align2::CENTER_CENTER, "Click a video in the library or drag it here", FontId::proportional(14.0), MUTED);
             return;
         }
 
@@ -1164,11 +1159,11 @@ impl EditorApp {
             let (crossed, len) = self.fade_len(&parts[0], *out);
             let len = fmt_len(len);
             let text = if crossed {
-                trf!("Fundido {len}", "Crossfade {len}", "Transição {len}")
+                format!("Crossfade {len}")
             } else if *out {
-                trf!("Se va en {len}", "Fades out over {len}", "Desaparece em {len}")
+                format!("Fades out over {len}")
             } else {
-                trf!("Aparece en {len}", "Fades in over {len}", "Surge em {len}")
+                format!("Fades in over {len}")
             };
             let g = painter.layout_no_wrap(text, FontId::proportional(12.0), WHITE);
             let r = Rect::from_min_size(Pos2::new(h.x + 12.0, h.y - g.size().y - 12.0), g.size() + egui::vec2(12.0, 6.0));

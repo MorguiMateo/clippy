@@ -9,7 +9,6 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::i18n::{tr, trf};
 use super::media::{self, Clip, Curve, Edit, Frame, Ratio};
 use super::playback::UNKNOWN_FRAME;
 use super::EditorApp;
@@ -305,8 +304,8 @@ impl EditorApp {
         let k = self.tracks[ti].kind;
         let n = self.tracks[..=ti].iter().filter(|t| t.kind == k).count();
         match k {
-            TrackKind::Video => trf!("Video {n}", "Video {n}", "Vídeo {n}"),
-            TrackKind::Audio => trf!("Audio {n}", "Audio {n}", "Áudio {n}"),
+            TrackKind::Video => format!("Video {n}"),
+            TrackKind::Audio => format!("Audio {n}"),
         }
     }
 
@@ -715,9 +714,9 @@ impl EditorApp {
     /// Qué hace ahora el botón de separar o unir.
     pub(super) fn link_label(&self) -> &'static str {
         if self.group(self.selected.unwrap_or(0)).len() > 1 {
-            tr!("Separar audio y video", "Unlink audio and video", "Separar áudio e vídeo")
+            "Unlink audio and video"
         } else {
-            tr!("Volver a unir audio y video", "Relink audio and video", "Unir áudio e vídeo de novo")
+            "Relink audio and video"
         }
     }
 

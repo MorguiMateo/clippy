@@ -9,7 +9,6 @@ use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM, WPARAM};
 use windows::Win32::System::Threading::{OpenMutexW, SYNCHRONIZATION_SYNCHRONIZE};
 use windows::Win32::UI::WindowsAndMessaging::{FindWindowW, GetWindowThreadProcessId, PostMessageW, WM_APP, WM_CLOSE};
 
-use crate::i18n::{self, Lang};
 use crate::ui_kit::window::find_own_window;
 
 const APPLY_UPDATE: &str = "--apply-update";
@@ -84,23 +83,17 @@ pub enum Window {
 }
 
 impl Window {
-    /// Título en el idioma actual.
+    /// Título, con la versión: así se ve en la barra de la ventana qué versión está abierta.
     pub fn title(self) -> &'static str {
-        self.title_in(i18n::lang())
-    }
-
-    fn title_in(self, lang: Lang) -> &'static str {
-        match (self, lang) {
-            (Window::Settings, _) => "Clippy",
-            (Window::Editor, Lang::Es) => "Editor de Clippy",
-            (Window::Editor, Lang::En) => "Clippy Editor",
-            (Window::Editor, Lang::Pt) => "Editor do Clippy",
+        match self {
+            Window::Settings => concat!("Clippy v", env!("CARGO_PKG_VERSION")),
+            Window::Editor => concat!("Clippy Editor v", env!("CARGO_PKG_VERSION")),
         }
     }
 
-    /// La ventana abierta en otro proceso, aunque se haya abierto con otro idioma.
+    /// La ventana abierta en otro proceso de esta misma versión.
     pub fn find(self) -> Option<HWND> {
-        Lang::ALL.into_iter().find_map(|l| find_own_window(self.title_in(l)))
+        find_own_window(self.title())
     }
 
     /// Candado de instancia única.

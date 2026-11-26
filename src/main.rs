@@ -6,7 +6,6 @@ mod config;
 #[cfg(feature = "devtools")]
 mod devtools;
 mod editor;
-mod i18n;
 mod log;
 mod mf;
 #[cfg(feature = "devtools")]

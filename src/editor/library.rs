@@ -11,7 +11,6 @@ use std::time::SystemTime;
 use eframe::egui;
 
 use super::media::{self, Probe};
-use crate::i18n::{tr, trf};
 use crate::mf::Mf;
 use super::player::Video;
 use crate::log::app_dir;
@@ -474,11 +473,7 @@ pub fn recycle(p: &Path) -> std::io::Result<()> {
         if r == 0 && !op.fAnyOperationsAborted.as_bool() && !p.exists() {
             Ok(())
         } else {
-            Err(std::io::Error::other(trf!(
-                "no se pudo mandar a la Papelera ({r})",
-                "couldn't send it to the Recycle Bin ({r})",
-                "não foi possível mandar para a Lixeira ({r})"
-            )))
+            Err(std::io::Error::other(format!("couldn't send it to the Recycle Bin ({r})")))
         }
     })
 }
@@ -560,7 +555,7 @@ pub fn pretty_name(p: &Path) -> String {
         if parts.len() >= 6 && parts[..6].iter().all(|x| x.chars().all(|c| c.is_ascii_digit())) {
             let extra = if parts.len() > 6 { format!(" ({})", parts[6..].join(" ")) } else { String::new() };
             // Día y mes en el orden de cada idioma (en inglés, mes/día).
-            let (a, b) = tr!((parts[2], parts[1]), (parts[1], parts[2]), (parts[2], parts[1]));
+            let (a, b) = (parts[1], parts[2]);
             return format!("{a}/{b} · {}:{}:{}{extra}", parts[3], parts[4], parts[5]);
         }
     }

@@ -9,7 +9,6 @@ use eframe::egui::text::{LayoutJob, TextWrapping};
 use eframe::egui::{self, Align, Color32, CursorIcon, FontFamily, FontId, Galley, Layout, Margin, Pos2, Rect, RichText, Sense, Shape, Stroke, TextStyle, Vec2};
 use eframe::egui::emath::TSTransform;
 
-use crate::i18n::tr;
 
 pub const BG: Color32 = Color32::from_rgb(10, 10, 10);
 pub const CARD: Color32 = Color32::from_rgb(18, 18, 18);
@@ -21,6 +20,8 @@ pub const MUTED: Color32 = Color32::from_rgb(140, 140, 140);
 pub const WHITE: Color32 = Color32::from_rgb(250, 250, 250);
 pub const BLACK: Color32 = Color32::from_rgb(10, 10, 10);
 pub const DANGER: Color32 = Color32::from_rgb(235, 110, 110);
+/// Punto de "grabando" (el único color de la interfaz fuera de los grises y el rojo de peligro).
+pub const REC: Color32 = Color32::from_rgb(255, 72, 72);
 /// Borde de los controles sin fondo (botón fantasma, tuerca).
 /// Fondo del texto seleccionado.
 pub const SELECTION: Color32 = Color32::from_rgb(70, 70, 70);
@@ -536,23 +537,21 @@ pub fn seg<T: PartialEq + Copy>(ui: &mut egui::Ui, v: &mut T, opts: &[(T, &str)]
     changed
 }
 
+/// Grupo de ajustes: el título afuera y las filas en una tarjeta, separadas con `divider`.
 pub fn section(ui: &mut egui::Ui, title: &str, add: impl FnOnce(&mut egui::Ui)) {
-    caption(ui, title);
-    card(ui, add);
-    ui.add_space(14.0);
-}
-
-pub fn card(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
+    ui.label(RichText::new(title).family(bold()).size(16.0).color(TEXT));
+    ui.add_space(4.0);
     egui::Frame::none()
         .fill(CARD)
         .stroke(Stroke::new(1.0_f32, LINE))
-        .rounding(10.0)
-        .inner_margin(Margin::symmetric(18.0, 14.0))
+        .rounding(12.0)
+        .inner_margin(Margin::symmetric(22.0, 18.0))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.spacing_mut().item_spacing.y = 10.0;
+            ui.spacing_mut().item_spacing.y = 14.0;
             add(ui);
         });
+    ui.add_space(22.0);
 }
 
 /// Tarjeta destacada (lo principal de una página): un poco más clara y con más aire que `card`.
@@ -591,17 +590,63 @@ pub fn row(ui: &mut egui::Ui, label: &str, label_w: f32, add: impl FnOnce(&mut e
     });
 }
 
-/// Texto secundario debajo de una fila, alineado con la columna de controles.
-pub fn hint(ui: &mut egui::Ui, indent: f32, text: impl Into<String>) {
-    ui.horizontal(|ui| {
-        ui.add_space(indent);
-        hint_label(ui, text);
+/// Ancho desde el que una fila de ajuste pone la explicación y el control lado a lado (si no, uno arriba del otro).
+const SETTING_SIDE_BY_SIDE: f32 = 600.0;
+
+/// Fila de ajuste: el nombre y qué hace a la izquierda, el control a la derecha. Si no hay ancho, el control va abajo.
+/// El control ocupa una columna fija: los selectores y deslizadores la llenan, los interruptores van a su derecha.
+pub fn setting(ui: &mut egui::Ui, title: &str, about: impl Into<String>, add: impl FnOnce(&mut egui::Ui)) {
+    let about = about.into();
+    let text = |ui: &mut egui::Ui| {
+        ui.spacing_mut().item_spacing.y = 3.0;
+        ui.label(RichText::new(title).family(bold()).size(14.5).color(TEXT));
+        if !about.is_empty() {
+            ui.add(egui::Label::new(RichText::new(&about).size(12.5).color(MUTED)).wrap());
+        }
+    };
+    let total = ui.available_width();
+    if total < SETTING_SIDE_BY_SIDE {
+        ui.vertical(|ui| {
+            ui.set_width(total);
+            text(ui);
+            ui.add_space(4.0);
+            add(ui);
+        });
+        return;
+    }
+    let control_w = (total * 0.48).min(440.0);
+    let gap = 28.0;
+    ui.horizontal_top(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        ui.allocate_ui_with_layout(egui::vec2(total - control_w - gap, 0.0), Layout::top_down(Align::Min), |ui| {
+            ui.set_width(total - control_w - gap);
+            ui.add_space(2.0);
+            text(ui);
+        });
+        ui.add_space(gap);
+        ui.allocate_ui_with_layout(egui::vec2(control_w, 0.0), Layout::top_down(Align::Min), |ui| {
+            ui.set_width(control_w);
+            ui.spacing_mut().item_spacing = egui::vec2(8.0, 8.0);
+            add(ui);
+        });
     });
 }
 
-/// Texto secundario donde va (por ejemplo, al lado de un interruptor).
-pub fn hint_label(ui: &mut egui::Ui, text: impl Into<String>) {
-    ui.add(egui::Label::new(RichText::new(text.into()).size(12.5).color(MUTED)).wrap());
+/// Etiqueta chica con borde (la versión, "Recommended").
+pub fn badge(ui: &mut egui::Ui, text: &str, color: Color32) -> egui::Response {
+    egui::Frame::none()
+        .stroke(Stroke::new(1.0_f32, BORDER))
+        .rounding(20.0)
+        .inner_margin(Margin::symmetric(8.0, 2.0))
+        .show(ui, |ui| ui.label(RichText::new(text).size(11.5).color(color)))
+        .response
+}
+
+/// Punto de estado (grabando, en pausa, error), con un halo del mismo color: se ve de lejos sin moverse.
+pub fn status_dot(ui: &mut egui::Ui, color: Color32) {
+    let (r, _) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), Sense::hover());
+    ui.painter().circle_filled(r.center(), 6.5, color.gamma_multiply(0.22));
+    ui.painter().circle_filled(r.center(), 4.0, color);
 }
 
 pub fn toggle(ui: &mut egui::Ui, on: &mut bool) -> egui::Response {
@@ -656,7 +701,7 @@ pub fn fmt_bytes(b: f64) -> String {
 /// 1284 -> "1.284" (en inglés, "1,284")
 pub fn fmt_count(n: usize) -> String {
     let d = n.to_string();
-    let sep = tr!('.', ',', '.');
+    let sep = ',';
     let mut out = String::new();
     for (i, c) in d.chars().enumerate() {
         if i > 0 && (d.len() - i).is_multiple_of(3) {
@@ -829,7 +874,7 @@ fn close_button(ui: &mut egui::Ui) -> egui::Response {
     shapes.push(Shape::line_segment([c + egui::vec2(-s, -s), c + egui::vec2(s, s)], stroke));
     shapes.push(Shape::line_segment([c + egui::vec2(-s, s), c + egui::vec2(s, -s)], stroke));
     paint_pressed(ui, c, press(ui, &resp), PRESS_DEPTH_ICON, shapes);
-    resp.on_hover_cursor(CursorIcon::PointingHand).on_hover_text(tr!("Cerrar (Esc)", "Close (Esc)", "Fechar (Esc)"))
+    resp.on_hover_cursor(CursorIcon::PointingHand).on_hover_text("Close (Esc)")
 }
 
 /// Ítem de navegación lateral (texto a la izquierda, resaltado si está activo).

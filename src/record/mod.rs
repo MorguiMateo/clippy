@@ -9,7 +9,7 @@ mod cursor;
 mod encoder;
 mod game;
 mod mux;
-mod screen;
+pub mod screen;
 mod track;
 pub mod recorder;
 

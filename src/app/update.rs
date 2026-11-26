@@ -15,7 +15,6 @@ use windows::core::{w, HSTRING, PCWSTR};
 use windows::Win32::Networking::WinHttp::*;
 
 use super::mode::{tray_running, Mode, Window};
-use crate::i18n::{tr, trf};
 use crate::log::{app_dir, log};
 
 /// Repositorio público donde se publican las versiones (Releases).
@@ -202,7 +201,7 @@ fn fetch_latest() -> Result<(String, String, Option<String>)> {
         .assets
         .into_iter()
         .find(|a| a.name.eq_ignore_ascii_case("Clippy.exe"))
-        .ok_or_else(|| anyhow!(tr!("la versión no tiene Clippy.exe", "the release has no Clippy.exe", "a versão não tem Clippy.exe")))?;
+        .ok_or_else(|| anyhow!("the release has no Clippy.exe"))?;
     Ok((r.tag_name, a.browser_download_url, r.body))
 }
 
@@ -220,7 +219,7 @@ fn old_path(exe: &Path) -> PathBuf {
 pub fn download(url: &str) -> Result<PathBuf> {
     let data = http_get(url)?;
     if data.len() < 1_000_000 || &data[..2] != b"MZ" {
-        bail!(tr!("la descarga no es un programa válido", "the download isn't a valid program", "o download não é um programa válido"));
+        bail!("the download isn't a valid program");
     }
     let p = downloaded_path();
     std::fs::write(&p, data)?;
@@ -303,11 +302,11 @@ fn http_get(url: &str) -> Result<Vec<u8>> {
     unsafe {
         let session = Handle(WinHttpOpen(w!("Clippy-Updater"), WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, PCWSTR::null(), PCWSTR::null(), 0));
         if session.0.is_null() {
-            bail!(tr!("no se pudo iniciar WinHTTP", "couldn't start WinHTTP", "não foi possível iniciar o WinHTTP"));
+            bail!("couldn't start WinHTTP");
         }
         let conn = Handle(WinHttpConnect(session.0, &HSTRING::from(host), INTERNET_DEFAULT_HTTPS_PORT, 0));
         if conn.0.is_null() {
-            bail!(trf!("no se pudo conectar a {host}", "couldn't connect to {host}", "não foi possível conectar a {host}"));
+            bail!(format!("couldn't connect to {host}"));
         }
         let req = Handle(WinHttpOpenRequest(
             conn.0,
@@ -319,7 +318,7 @@ fn http_get(url: &str) -> Result<Vec<u8>> {
             WINHTTP_FLAG_SECURE,
         ));
         if req.0.is_null() {
-            bail!(tr!("no se pudo crear la consulta", "couldn't create the request", "não foi possível criar a consulta"));
+            bail!("couldn't create the request");
         }
         let headers: Vec<u16> = "Accept: application/vnd.github+json\r\n".encode_utf16().collect();
         WinHttpSendRequest(req.0, Some(&headers), None, 0, 0, 0)?;
@@ -337,12 +336,8 @@ fn http_get(url: &str) -> Result<Vec<u8>> {
         )?;
         match status {
             200 => {}
-            403 | 429 => bail!(tr!(
-                "GitHub está limitando las consultas desde tu conexión. Probá de nuevo en un rato",
-                "GitHub is rate-limiting requests from your connection. Try again in a while",
-                "O GitHub está limitando as consultas da sua conexão. Tente de novo daqui a pouco"
-            )),
-            _ => bail!(trf!("el servidor respondió {status}", "the server answered {status}", "o servidor respondeu {status}")),
+            403 | 429 => bail!("GitHub is rate-limiting requests from your connection. Try again in a while"),
+            _ => bail!(format!("the server answered {status}")),
         }
         let mut body = Vec::new();
         loop {
