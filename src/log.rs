@@ -12,11 +12,12 @@ pub fn app_dir() -> PathBuf {
         .join("Clippy")
 }
 
+/// Con milisegundos: así se mide cuánto tarda cada paso (atajo -> grabadora -> clip guardado).
 fn timestamp() -> String {
     let t = unsafe { GetLocalTime() };
     format!(
-        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
-        t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond
+        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:03}",
+        t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond, t.wMilliseconds
     )
 }
 
@@ -37,8 +38,12 @@ pub fn log(msg: &str) {
             let _ = std::fs::remove_file(&p);
         }
     }
-    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&p) {
-        let _ = writeln!(f, "[{}] {}", timestamp(), msg);
+    match std::fs::OpenOptions::new().create(true).append(true).open(&p) {
+        Ok(mut f) => {
+            let _ = writeln!(f, "[{}] {}", timestamp(), msg);
+        }
+        // Si otro programa tiene el registro tomado (antivirus, indexador), la línea no se pierde del todo.
+        Err(_) => eprintln!("[{}] {msg}", timestamp()),
     }
     #[cfg(debug_assertions)]
     eprintln!("{msg}");
