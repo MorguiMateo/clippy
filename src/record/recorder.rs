@@ -59,8 +59,8 @@ pub struct Recorder {
 
 impl Recorder {
     pub fn start(cfg: Config, notify: Notify) -> Self {
-        // Lo que se usó para guardar el clip (la copia de cada cuadro para el MP4, la mezcla del audio) ya se soltó
-        // cuando el hilo que guarda avisa que terminó.
+        // Lo que se usó para guardar el clip (las muestras y la cola del Sink Writer, el MP4 a medio escribir) ya se
+        // soltó cuando el hilo que guarda avisa que terminó.
         let notify: Notify = Arc::new(move |ev| {
             if matches!(ev, Event::Saved(_)) {
                 give_back_memory();
