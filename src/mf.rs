@@ -44,7 +44,8 @@ impl Mf {
     pub fn init() -> Mf {
         unsafe {
             let com = CoInitializeEx(None, COINIT_MULTITHREADED).is_ok();
-            let _ = MFStartup(MF_VERSION, MFSTARTUP_FULL);
+            // Sin los sockets (MFSTARTUP_FULL los inicia para fuentes de red): Clippy solo lee y escribe archivos.
+            let _ = MFStartup(MF_VERSION, MFSTARTUP_LITE);
             Mf { com }
         }
     }
