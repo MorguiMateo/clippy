@@ -7,7 +7,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
+use windows::Win32::Foundation::HANDLE;
 use windows::Win32::Graphics::Gdi::HMONITOR;
+use windows::Win32::System::Memory::{HeapOptimizeResources, HeapSetInformation};
 use windows::Win32::System::Threading::{GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_ABOVE_NORMAL};
 
 use super::audio::{self, Audio, AudioBuf, Source};
@@ -51,6 +53,14 @@ pub struct Recorder {
 
 impl Recorder {
     pub fn start(cfg: Config, notify: Notify) -> Self {
+        // Lo que se usó para guardar el clip (la copia de cada cuadro para el MP4, la mezcla del audio) ya se soltó
+        // cuando el hilo que guarda avisa que terminó.
+        let notify: Notify = Arc::new(move |ev| {
+            if matches!(ev, Event::Saved(_)) {
+                give_back_memory();
+            }
+            notify(ev)
+        });
         let (tx, rx) = mpsc::channel();
         let handle = std::thread::Builder::new()
             .name("clippy-rec".into())
@@ -144,6 +154,19 @@ fn thread_main(mut cfg: Config, rx: Receiver<Cmd>, notify: Notify) {
                 }
             }
         }
+    }
+    // En pausa (o antes de volver a empezar con otros ajustes) los buffers ya se soltaron.
+    give_back_memory();
+}
+
+/// Le devuelve a Windows la memoria que los heaps del proceso tienen libre. El heap se queda con lo que se suelta para
+/// volver a usarlo, así que después de un pico (guardar un clip) o de soltar los buffers (dejar de grabar) seguiría
+/// contando como RAM privada aunque nadie lo use. Windows 8.1 o más nuevo; en los anteriores no hace nada.
+fn give_back_memory() {
+    // HEAP_OPTIMIZE_RESOURCES_INFORMATION { Version: 1, Flags: 0 }; sin heap: todos los del proceso.
+    let info = [1u32, 0];
+    unsafe {
+        let _ = HeapSetInformation(HANDLE::default(), HeapOptimizeResources, Some(info.as_ptr().cast()), size_of_val(&info));
     }
 }
 
