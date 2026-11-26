@@ -17,14 +17,20 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use windows::core::{w, Interface, PCWSTR};
-use windows::Win32::Foundation::{CloseHandle, FILETIME};
+use windows::Win32::Foundation::{CloseHandle, FILETIME, HANDLE, HMODULE};
 use windows::Win32::Graphics::Dxgi::{CreateDXGIFactory1, IDXGIAdapter3, IDXGIFactory1, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, DXGI_QUERY_VIDEO_MEMORY_INFO};
 use windows::Win32::System::Diagnostics::ToolHelp::{CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32};
 use windows::Win32::System::Performance::{
     PdhAddEnglishCounterW, PdhCloseQuery, PdhCollectQueryData, PdhGetFormattedCounterArrayW, PdhOpenQueryW, PDH_FMT_COUNTERVALUE_ITEM_W,
     PDH_FMT_DOUBLE, PDH_MORE_DATA,
 };
-use windows::Win32::System::ProcessStatus::{K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS, PROCESS_MEMORY_COUNTERS_EX};
+use windows::Win32::System::Memory::{
+    GetProcessHeap, GetProcessHeaps, HeapSummary, VirtualQuery, HEAP_SUMMARY, MEMORY_BASIC_INFORMATION, MEM_COMMIT, MEM_IMAGE, MEM_PRIVATE,
+    PAGE_EXECUTE_READWRITE, PAGE_EXECUTE_WRITECOPY, PAGE_READWRITE, PAGE_WRITECOPY,
+};
+use windows::Win32::System::ProcessStatus::{
+    K32EnumProcessModules, K32GetModuleBaseNameW, K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS, PROCESS_MEMORY_COUNTERS_EX,
+};
 use windows::Win32::System::Threading::{
     GetCurrentProcess, GetCurrentThread, GetGuiResources, GetProcessHandleCount, GetProcessTimes, GetThreadTimes, GR_GDIOBJECTS,
     GR_USEROBJECTS,
@@ -329,6 +335,98 @@ impl Meter {
     }
 }
 
+/// La RAM privada del proceso por partes, recorriendo su memoria virtual: cuánto es de los buffers, cuánto de lo que
+/// carga la grabadora (el driver de la placa, Media Foundation) y cuánto del proceso en sí. Las partes se superponen
+/// (un bloque grande de un heap cuenta en los dos): son para comparar entre momentos y entre versiones, no para sumar.
+#[derive(Clone, Default, Serialize)]
+struct MemMap {
+    /// La del Administrador de tareas y lo comprometido en memoria privada (MB).
+    privada_mb: f64,
+    virtual_privada_mb: f64,
+    /// Comprometido en el heap del proceso (todo lo de Rust: buffers, paquetes, mezcla) y en los demás heaps (Media
+    /// Foundation, el driver, COM).
+    heap_proceso_mb: f64,
+    otros_heaps_mb: f64,
+    /// Reservas privadas de 1 MB o más (cada GOP grande del buffer de video, memoria del driver) y cuántas son.
+    bloques_grandes_mb: f64,
+    bloques_grandes: usize,
+    /// Páginas escribibles del exe y las DLL: lo más que pueden sumar a la RAM privada.
+    dll_escribible_mb: f64,
+    /// DLL cargadas, y las de la placa y Media Foundation por nombre.
+    dlls: usize,
+    dlls_video: Vec<String>,
+}
+
+/// DLL de la placa de video (NVIDIA, AMD, Intel), de Direct3D y de Media Foundation.
+fn video_dll(name: &str) -> bool {
+    let n = name.to_ascii_lowercase();
+    ["nv", "amd", "ati", "igd", "igc", "libmfx", "intel", "d3d", "dxgi", "mf", "msmpeg2", "msaud"].iter().any(|p| n.starts_with(p))
+}
+
+fn mem_map() -> MemMap {
+    let mb = |b: usize| (b as f64 / 1_048_576.0 * 10.0).round() / 10.0;
+    let mut m = MemMap::default();
+    unsafe {
+        let p = GetCurrentProcess();
+        let mut mem = PROCESS_MEMORY_COUNTERS_EX { cb: size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32, ..Default::default() };
+        let _ = K32GetProcessMemoryInfo(p, &mut mem as *mut _ as *mut PROCESS_MEMORY_COUNTERS, mem.cb);
+        m.privada_mb = mb(mem.PrivateUsage);
+
+        // Lo privado comprometido de cada reserva, y lo escribible de las imágenes (exe y DLL).
+        let writable = PAGE_READWRITE.0 | PAGE_WRITECOPY.0 | PAGE_EXECUTE_READWRITE.0 | PAGE_EXECUTE_WRITECOPY.0;
+        let mut reserves: HashMap<usize, usize> = HashMap::new();
+        let (mut private, mut image) = (0usize, 0usize);
+        let mut at = 0usize;
+        let mut info = MEMORY_BASIC_INFORMATION::default();
+        while VirtualQuery(Some(at as *const _), &mut info, size_of::<MEMORY_BASIC_INFORMATION>()) != 0 {
+            if info.State == MEM_COMMIT {
+                if info.Type == MEM_PRIVATE {
+                    private += info.RegionSize;
+                    *reserves.entry(info.AllocationBase as usize).or_default() += info.RegionSize;
+                } else if info.Type == MEM_IMAGE && info.Protect.0 & writable != 0 {
+                    image += info.RegionSize;
+                }
+            }
+            match (info.BaseAddress as usize).checked_add(info.RegionSize) {
+                Some(next) if next > at => at = next,
+                _ => break,
+            }
+        }
+        let big: Vec<usize> = reserves.into_values().filter(|&b| b >= 1 << 20).collect();
+        (m.virtual_privada_mb, m.dll_escribible_mb) = (mb(private), mb(image));
+        (m.bloques_grandes_mb, m.bloques_grandes) = (mb(big.iter().sum()), big.len());
+
+        let mut heaps = [HANDLE::default(); 256];
+        let n = (GetProcessHeaps(&mut heaps) as usize).min(heaps.len());
+        let main = GetProcessHeap().unwrap_or_default();
+        let (mut own, mut others) = (0usize, 0usize);
+        for &h in &heaps[..n] {
+            let mut s = HEAP_SUMMARY { cb: size_of::<HEAP_SUMMARY>() as u32, ..Default::default() };
+            if HeapSummary(h, 0, &mut s).as_bool() {
+                *if h == main { &mut own } else { &mut others } += s.cbCommitted;
+            }
+        }
+        (m.heap_proceso_mb, m.otros_heaps_mb) = (mb(own), mb(others));
+
+        let mut mods = [HMODULE::default(); 1024];
+        let mut needed = 0u32;
+        if K32EnumProcessModules(p, mods.as_mut_ptr(), size_of_val(&mods) as u32, &mut needed).as_bool() {
+            let n = (needed as usize / size_of::<HMODULE>()).min(mods.len());
+            m.dlls = n;
+            for &h in &mods[..n] {
+                let mut name = [0u16; 260];
+                let len = K32GetModuleBaseNameW(p, h, &mut name) as usize;
+                let name = String::from_utf16_lossy(&name[..len]);
+                if video_dll(&name) {
+                    m.dlls_video.push(name);
+                }
+            }
+            m.dlls_video.sort();
+        }
+    }
+    m
+}
+
 /// Uso de cada motor de la placa por proceso, con los contadores de Windows que usa el Administrador de tareas
 /// (por su nombre en inglés: andan en cualquier idioma).
 struct Gpu {
@@ -439,6 +537,7 @@ pub fn soak(args: &[String]) -> i32 {
     let _ = std::fs::create_dir_all(&first.output_dir);
     println!("calentamiento: grabadora 5 s y un clip ({})", if session_once(&first, 5) { "guardado" } else { "NO guardado" });
     let before = meter.sample(0.0, false);
+    let mem_before = mem_map();
 
     let events: Arc<Mutex<Vec<(Instant, Event)>>> = Arc::default();
     let sink = events.clone();
@@ -489,12 +588,14 @@ pub fn soak(args: &[String]) -> i32 {
         }
         tick += 1.0;
     }
+    let mem_rec = mem_map();
     drop(rec);
     // Lo que queda después de cerrar la grabadora (hilos y handles que no se soltaron).
     std::thread::sleep(Duration::from_secs(2));
     let after = meter.sample(start.elapsed().as_secs_f64(), false);
+    let mem = [mem_before, mem_rec, mem_map()];
 
-    let report = analyze(&Input { scenario, minutes, warmup, encoder, ok, failed, log, before, after }, &samples);
+    let report = analyze(&Input { scenario, minutes, warmup, encoder, ok, failed, log, before, after, mem }, &samples);
     let md = report.markdown();
     let _ = std::fs::write(dir.join("informe.json"), serde_json::to_string_pretty(&report).unwrap_or_default());
     let _ = std::fs::write(dir.join("informe.md"), &md);
@@ -610,6 +711,8 @@ struct Input<'a> {
     log: Vec<String>,
     before: Sample,
     after: Sample,
+    /// La RAM por partes sin grabar (después del calentamiento), grabando (al final) y al cerrar la grabadora.
+    mem: [MemMap; 3],
 }
 
 #[derive(Serialize)]
@@ -693,6 +796,9 @@ struct Report {
     guardado_mp4_ms: Stat,
     fugas: Vec<Leak>,
     al_cerrar: String,
+    /// Sin grabar, grabando y al cerrar (ver `MemMap`), y los buffers de video y audio al final (MB).
+    ram_por_partes: [MemMap; 3],
+    buffers_al_final_mb: (f64, f64),
     eventos: Vec<String>,
     avisos: Vec<String>,
     veredicto: &'static str,
@@ -905,6 +1011,8 @@ fn analyze(i: &Input, samples: &[Sample]) -> Report {
         guardado_mp4_ms: stat(saves.iter().map(|s| s.mp4_ms as f64)),
         fugas,
         al_cerrar,
+        ram_por_partes: i.mem.clone(),
+        buffers_al_final_mb: samples.iter().rev().find_map(|s| s.rec.as_ref()).map_or((0.0, 0.0), |r| (r.video_mb, r.audio_mb)),
         eventos: i.log.clone(),
         avisos,
         veredicto,
@@ -987,6 +1095,24 @@ impl Report {
             m += "\nRAM fuera de los buffers de video y audio: hace falta una corrida de al menos 30 min para confirmar fuga (en corridas más cortas el heap puede subir y bajar ~40 MB sin que haya fuga).\n";
         }
         m += &format!("\n{}.\n", capitalize(&self.al_cerrar));
+        m += "\n## RAM privada por partes (MB)\n\nLas partes se superponen: sirven para comparar momentos y versiones.\n\n| | Sin grabar | Grabando | Al cerrar |\n|---|---|---|---|\n";
+        type Part = fn(&MemMap) -> String;
+        let rows: [(&str, Part); 7] = [
+            ("RAM privada", |p| p.privada_mb.to_string()),
+            ("Memoria privada comprometida", |p| p.virtual_privada_mb.to_string()),
+            ("Heap del proceso (Rust)", |p| p.heap_proceso_mb.to_string()),
+            ("Otros heaps (Media Foundation, driver, COM)", |p| p.otros_heaps_mb.to_string()),
+            ("Reservas de 1 MB o más", |p| format!("{} ({})", p.bloques_grandes_mb, p.bloques_grandes)),
+            ("Páginas escribibles de las DLL", |p| p.dll_escribible_mb.to_string()),
+            ("DLL cargadas", |p| p.dlls.to_string()),
+        ];
+        let [a, b, c] = &self.ram_por_partes;
+        for (name, f) in rows {
+            m += &format!("| {name} | {} | {} | {} |\n", f(a), f(b), f(c));
+        }
+        let (v, au) = self.buffers_al_final_mb;
+        m += &format!("\nBuffers al final: video {v:.1} MB, audio {au:.1} MB.\n");
+        m += &format!("\nDLL de la placa y Media Foundation grabando: {}.\n", b.dlls_video.join(", "));
         if !self.eventos.is_empty() {
             m += "\n## Eventos\n\n";
             for e in &self.eventos {
