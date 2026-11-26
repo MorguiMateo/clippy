@@ -70,7 +70,10 @@ impl SettingsApp {
                     format!("{e} Clippy keeps trying by itself.")
                 } else if self.cfg.enabled {
                     let (key, secs) = (hotkey_name(self.cfg.hotkey_vk, self.cfg.hotkey_mods), fmt_secs(self.cfg.seconds));
-                    format!("{key} saves the last {secs}")
+                    match self.recording_game() {
+                        Some(g) => format!("{g} · {key} saves the last {secs}"),
+                        None => format!("{key} saves the last {secs}"),
+                    }
                 } else {
                     "Nothing is being saved".into()
                 };
@@ -204,7 +207,10 @@ impl SettingsApp {
                         format!("Press the new key. {CAPTURE_HINT}")
                     } else {
                         let (key, secs) = (hotkey_name(vk, mods), fmt_secs(self.cfg.seconds));
-                        format!("Press {key} at any time, even in game, and the last {secs} are saved.")
+                        match self.recording_game() {
+                            Some(g) => format!("Recording {g}: press {key} at any time and the last {secs} are saved."),
+                            None => format!("Press {key} at any time, even in game, and the last {secs} are saved."),
+                        }
                     };
                     ui.add(egui::Label::new(RichText::new(sub).color(MUTED)).wrap());
                     let note = match &self.global_note {
@@ -215,6 +221,11 @@ impl SettingsApp {
                 });
             });
         });
+    }
+
+    /// El juego que se está grabando ahora (solo con la grabadora andando y sin pausa).
+    fn recording_game(&self) -> Option<&str> {
+        self.recorder.game.as_deref().filter(|_| self.main_running && self.cfg.enabled && self.recorder.error.is_none())
     }
 
     /// Tarjeta destacada para abrir el editor.
@@ -639,6 +650,17 @@ impl SettingsApp {
                         if button(ui, "Test sound", Kind::Ghost).clicked() {
                             sound::play_saved();
                         }
+                    });
+                },
+            );
+            divider(ui);
+            setting(
+                ui,
+                "Notification on save",
+                "Shows a Windows notification with each saved clip: click it to open the editor. While you play in full screen, Windows may keep it in the notification center.",
+                |ui| {
+                    ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
+                        toggle(ui, &mut self.cfg.notify_on_save);
                     });
                 },
             );

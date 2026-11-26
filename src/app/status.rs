@@ -1,5 +1,5 @@
-//! Estado de la grabadora para la ventana principal, que corre en otro proceso: con qué codifica y por qué
-//! no puede grabar. La bandeja lo escribe en recorder.json solo cuando cambia; la ventana lo relee al
+//! Estado de la grabadora para la ventana principal, que corre en otro proceso: con qué codifica, qué juego
+//! está grabando y por qué no puede grabar. La bandeja lo escribe en recorder.json solo cuando cambia; la ventana lo relee al
 //! enterarse de un cambio en la carpeta de la app.
 
 use std::path::PathBuf;
@@ -15,6 +15,9 @@ pub struct Status {
     pub device: Option<Device>,
     /// Por qué no puede grabar (se reintenta solo).
     pub error: Option<String>,
+    /// Juego que detectó la grabadora (lo muestran el tooltip de la bandeja y la ventana principal).
+    #[serde(default)]
+    pub game: Option<String>,
 }
 
 fn file() -> PathBuf {

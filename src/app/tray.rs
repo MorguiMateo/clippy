@@ -48,10 +48,10 @@ struct App {
     rec: Option<Recorder>,
     icon_on: HICON,
     icon_off: HICON,
-    /// Con qué graba y por qué no puede (lo muestra también la ventana principal).
+    /// Con qué graba, qué juego y por qué no puede (lo muestra también la ventana principal).
     status: Status,
-    /// Juego detectado por la grabadora (para el tooltip).
-    game: Option<String>,
+    /// Clip de la última notificación: un clic en ella lo abre en el editor (None: las otras abren Clippy).
+    balloon_clip: Option<std::path::PathBuf>,
 }
 
 /// `background`: arrancar sin abrir la ventana (inicio automático con Windows).
@@ -110,7 +110,7 @@ pub fn run(background: bool) {
             icon_on: icon::hicon(size, true),
             icon_off: icon::hicon(size, false),
             status: Status::default(),
-            game: None,
+            balloon_clip: None,
         };
         app.tray(NIM_ADD);
         status::save(&app.status);
@@ -172,7 +172,6 @@ impl App {
         if restart || (self.cfg.enabled && self.rec.is_none()) {
             self.rec = None; // detiene la grabadora anterior
             self.set_status(Status::default());
-            self.game = None;
             if self.cfg.enabled {
                 self.rec = Some(Recorder::start(self.cfg.clone(), notifier(self.hwnd)));
             }
@@ -232,7 +231,7 @@ impl App {
         if self.cfg.enabled {
             let (key, secs) = (hotkey_name(self.cfg.hotkey_vk, self.cfg.hotkey_mods), fmt_secs(self.cfg.seconds));
             let mut t = format!("Clippy · recording · {key} saves {secs}");
-            if let Some(g) = &self.game {
+            if let Some(g) = &self.status.game {
                 t.push_str(&format!(" · game: {g}"));
             }
             t
@@ -261,15 +260,34 @@ impl App {
         }
     }
 
-    fn balloon(&self, title: &str, text: &str, warn: bool) {
+    fn balloon(&mut self, title: &str, text: &str, warn: bool) {
+        self.balloon_clip = None;
+        self.notify(title, text, if warn { NIIF_WARNING } else { NIIF_INFO });
+    }
+
+    fn notify(&self, title: &str, text: &str, flags: NOTIFY_ICON_INFOTIP_FLAGS) {
         let mut n = self.nid();
         n.uFlags = NIF_INFO;
         set_wstr(&mut n.szInfoTitle, title);
         set_wstr(&mut n.szInfo, text);
-        n.dwInfoFlags = if warn { NIIF_WARNING } else { NIIF_INFO };
+        n.dwInfoFlags = flags;
         unsafe {
             let _ = Shell_NotifyIconW(NIM_MODIFY, &n);
         }
+    }
+
+    /// Avisa que se guardó `clip`. Sin el sonido de Windows: el de Clippy ya sonó (si está prendido).
+    fn saved(&mut self, clip: std::path::PathBuf) {
+        if !self.cfg.notify_on_save {
+            return;
+        }
+        let secs = fmt_secs(self.cfg.seconds);
+        let what = match &self.status.game {
+            Some(g) => format!("{g} · last {secs}"),
+            None => format!("Last {secs}"),
+        };
+        self.notify("Clip saved", &format!("{what}. Click to open it in the editor."), NIIF_INFO | NIIF_NOSOUND);
+        self.balloon_clip = Some(clip);
     }
 
     fn save_clip(&self) {
@@ -297,19 +315,20 @@ impl App {
     fn handle_event(&mut self, ev: Event) {
         match ev {
             Event::Started(d) => {
-                self.set_status(Status { device: Some(d), error: None });
+                self.set_status(Status { device: Some(d), error: None, game: self.status.game.clone() });
                 self.tray(NIM_MODIFY);
             }
-            Event::Game(g) => {
-                self.game = g;
+            Event::Game(game) => {
+                self.set_status(Status { game, ..self.status.clone() });
                 self.tray(NIM_MODIFY);
             }
-            Event::Saved(_) => {} // el sonido lo reproduce la grabadora al instante
+            // El sonido lo reproduce la grabadora al instante; acá, la notificación.
+            Event::Saved(p) => self.saved(p),
             Event::SaveFailed(e) => self.balloon("Couldn't save the clip", &e, true),
             Event::Error(e) => {
                 // El globo sale al pasar de grabar a error, no si cambia el motivo mientras se reintenta.
                 let new = self.status.error.is_none();
-                self.set_status(Status { device: None, error: Some(e.clone()) });
+                self.set_status(Status { device: None, error: Some(e.clone()), game: self.status.game.clone() });
                 self.tray(NIM_MODIFY);
                 if new {
                     self.balloon(
@@ -418,7 +437,11 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
     match msg {
         WM_TRAY => {
             match (lp.0 & 0xFFFF) as u32 {
-                WM_LBUTTONUP | NIN_BALLOONUSERCLICK => open_settings(),
+                WM_LBUTTONUP => open_settings(),
+                NIN_BALLOONUSERCLICK => match with_app(|a| a.balloon_clip.take()).flatten() {
+                    Some(clip) => Mode::Editor(Some(clip)).launch(),
+                    None => open_settings(),
+                },
                 WM_RBUTTONUP => show_menu(hwnd),
                 _ => {}
             }

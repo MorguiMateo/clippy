@@ -135,6 +135,8 @@ pub struct Config {
     /// Dibujar el cursor del mouse en el video (apagado por defecto; ver `cursor_on`).
     pub cursor: bool,
     pub sound_on_save: bool,
+    /// Notificación de Windows con cada clip guardado (un clic la abre en el editor).
+    pub notify_on_save: bool,
     /// Atajo global para pausar/reanudar la grabación (vk 0 = sin asignar).
     pub toggle_vk: u32,
     pub toggle_mods: u32,
@@ -210,6 +212,7 @@ impl Default for Config {
             capture_mode: CaptureMode::Screen,
             cursor: false,
             sound_on_save: true,
+            notify_on_save: true,
             toggle_vk: 0,
             toggle_mods: 0,
             editor_vk: 0,
