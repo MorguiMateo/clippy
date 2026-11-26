@@ -99,6 +99,18 @@ $apps = @(
 foreach ($a in $apps) {
     if ((Find-Clase $a.Clase) -ne [IntPtr]::Zero) { throw "$($a.Nombre) está abierto: cerralo desde la bandeja (Salir) antes de medir; el versus abre el suyo." }
 }
+# Bals captura con Windows.Graphics.Capture, que necesita el servicio de captura de Windows. Si está frenado y no
+# arranca solo, Bals no graba (CreateForMonitor 0x80070422); Clippy usa DXGI y no lo necesita.
+foreach ($s in @(Get-Service -Name "CaptureService*" -ErrorAction SilentlyContinue | Where-Object { $_.Status -ne "Running" })) {
+    try { Start-Service $s.Name -ErrorAction Stop } catch { Write-Host "Aviso: no se pudo arrancar $($s.Name) ($($_.Exception.Message)); Bals puede no grabar." }
+}
+
+# El último error que dejó el programa en su registro: dice por qué no grabó.
+function Get-UltimoError([string]$dir) {
+    $logs = @(Get-ChildItem -Path $dir -Recurse -Include salida.txt, errores.txt, clippy.log -ErrorAction SilentlyContinue)
+    $l = $logs | ForEach-Object { Get-Content -Encoding UTF8 $_.FullName } | Where-Object { $_ -match "ERROR|error|falló|fallo|no se pudo" } | Select-Object -Last 1
+    if ($l) { $l.Trim() } else { $null }
+}
 
 # --- El clip que acaba de guardar: un .mp4 nuevo que ya nadie escribe --------------------------------------------------
 function Get-Clips([string]$dir) { @(Get-ChildItem -Path $dir -Filter *.mp4 -Recurse -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName }) }
@@ -200,6 +212,11 @@ function Invoke-Corrida($app, [int]$vuelta, [string]$dir) {
             $nextSample += 1
         }
         if ($t -ge $total -and -not $pend) { break }
+        # Dos clips seguidos sin salir y ninguno bueno: no está grabando, no tiene sentido medirlo hasta el final.
+        if ($saves.Count -ge 2 -and -not ($saves | Where-Object { $_.archivo })) {
+            Write-Host "  $($app.Nombre) no está grabando: corto esta corrida."
+            break
+        }
     }
 
     if (-not $p.HasExited) {
@@ -243,6 +260,9 @@ function Invoke-Corrida($app, [int]$vuelta, [string]$dir) {
     $res.clip_fps = Get-Stat $infos fps
     $res.clip_alto = Get-Stat $infos alto
     $res.clips = $infos
+    # Sin ningún clip la corrida no midió grabar (todo quedó en "guardando"): no entra en el promedio.
+    $res.no_grabo = $infos.Count -eq 0
+    $res.motivo = if ($res.no_grabo) { Get-UltimoError $dir } else { $null }
     [pscustomobject]$res
 }
 
@@ -253,11 +273,14 @@ New-Item -ItemType Directory -Force -Path $base | Out-Null
 $cpuName = (Get-CimInstance Win32_Processor | Select-Object -First 1).Name.Trim()
 $gpus = @(Get-CimInstance Win32_VideoController | ForEach-Object { $_.Name }) -join " + "
 $vc = Get-CimInstance Win32_VideoController | Where-Object { $_.CurrentHorizontalResolution } | Select-Object -First 1
+# La resolución del escritorio de verdad (WMI a veces queda con la del panel, aunque Windows esté en otra).
+Add-Type -AssemblyName System.Windows.Forms
+$pant = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
 $pc = [ordered]@{
     procesador = $cpuName; placa = $gpus
     ram_gb = [Math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB)
     windows = (Get-CimInstance Win32_OperatingSystem).Caption + " " + [Environment]::OSVersion.Version.ToString()
-    monitor = "$($vc.CurrentHorizontalResolution)x$($vc.CurrentVerticalResolution) a $($vc.CurrentRefreshRate) Hz"
+    monitor = "$($pant.Width)x$($pant.Height) a $($vc.CurrentRefreshRate) Hz"
 }
 $ver = @{ Clippy = (Get-Item $Clippy).VersionInfo.ProductVersion; Bals = (Get-Item $Bals).VersionInfo.ProductVersion }
 Write-Host "Versus en $base ($Ajustes, escena $Escena, $Vueltas vuelta(s) de $Minutos min por programa)"
@@ -291,7 +314,8 @@ $metricas = @(
     @("handles_suben", "Handles: cuánto suben", "", $true), @("hilos_suben", "Hilos: cuánto suben", "", $true),
     @("cerrar_ms", "Tarda en cerrarse", "ms", $true)
 )
-function Get-Promedio([string]$app, [string]$field) { Get-Stat @($corridas | Where-Object { $_.app -eq $app }) $field }
+function Get-Promedio([string]$app, [string]$field) { Get-Stat @($corridas | Where-Object { $_.app -eq $app -and -not $_.no_grabo }) $field }
+$sinDatos = @($apps | Where-Object { $n = $_.Nombre; -not ($corridas | Where-Object { $_.app -eq $n -and -not $_.no_grabo }) } | ForEach-Object { $_.Nombre })
 $promedio = [ordered]@{}
 foreach ($a in $apps) { $promedio[$a.Nombre] = [ordered]@{}; foreach ($m in $metricas) { $promedio[$a.Nombre][$m[0]] = Get-Promedio $a.Nombre $m[0] } }
 
@@ -304,6 +328,10 @@ $md.Add("- Clippy $($ver.Clippy): ``$Clippy``")
 $md.Add("- Bals $($ver.Bals): ``$Bals``")
 $md.Add("- PC: $($pc.procesador) · $($pc.placa) · $($pc.ram_gb) GB · $($pc.windows) · monitor $($pc.monitor)")
 $md.Add("")
+foreach ($n in $sinDatos) {
+    $md.Add("> **$n no grabó en ninguna vuelta**: no hay con qué comparar (ver ""Cada corrida""). La tabla no tiene ganador.")
+    $md.Add("")
+}
 $md.Add("| | Clippy | Bals | Diferencia | Mejor |")
 $md.Add("|---|---:|---:|---:|---|")
 $gana = @{ Clippy = 0; Bals = 0 }
@@ -312,7 +340,7 @@ foreach ($m in $metricas) {
     if ($c -eq $null -and $b -eq $null) { continue }
     $u = if ($m[2]) { " $($m[2])" } else { "" }
     $diff = ""; $best = ""
-    if ($c -ne $null -and $b -ne $null) {
+    if ($c -ne $null -and $b -ne $null -and -not $sinDatos) {
         if ($b -ne 0) { $diff = "{0:+0;-0;0} %" -f (($c - $b) / [Math]::Abs($b) * 100) }
         if ($m[3] -ne $null -and $c -ne $b) {
             $best = if (($c -lt $b) -eq $m[3]) { "Clippy" } else { "Bals" }
@@ -322,8 +350,10 @@ foreach ($m in $metricas) {
     $md.Add("| $($m[1]) | $c$u | $b$u | $diff | $best |")
 }
 $md.Add("")
-$md.Add("Gana en más filas: **$(if ($gana.Clippy -gt $gana.Bals) { 'Clippy' } elseif ($gana.Bals -gt $gana.Clippy) { 'Bals' } else { 'empate' })** (Clippy $($gana.Clippy), Bals $($gana.Bals)).")
-$md.Add("")
+if (-not $sinDatos) {
+    $md.Add("Gana en más filas: **$(if ($gana.Clippy -gt $gana.Bals) { 'Clippy' } elseif ($gana.Bals -gt $gana.Clippy) { 'Bals' } else { 'empate' })** (Clippy $($gana.Clippy), Bals $($gana.Bals)).")
+    $md.Add("")
+}
 $md.Add("## Cómo leerlo")
 $md.Add("")
 $md.Add("- Todo se mide desde afuera, por proceso: lo que usa cada programa, no la PC entera. Procesador en % de toda la PC.")
@@ -337,7 +367,8 @@ $md.Add("")
 $md.Add("## Cada corrida")
 $md.Add("")
 foreach ($r in $corridas) {
-    $estado = if ($r.se_cayo) { "**se cerró solo**" } elseif ($r.cerro_bien -eq $false) { "no se cerró en 15 s (se forzó)" } else { "ok" }
+    $motivo = if ($r.motivo) { ': `' + $r.motivo + '`' } else { "" }
+    $estado = if ($r.se_cayo) { "**se cerró solo**" } elseif ($r.no_grabo) { "**no grabó** (fuera del promedio)$motivo" } elseif ($r.cerro_bien -eq $false) { "no se cerró en 15 s (se forzó)" } else { "ok" }
     $md.Add("- $($r.app), vuelta $($r.vuelta): $estado · CPU $($r.cpu_pct) % · RAM $($r.ram_privada_mb) MB · placa $($r.gpu_pct) % · $($r.clips_ok) clips · ``$($r.carpeta)``")
 }
 [IO.File]::WriteAllText((Join-Path $base "versus.md"), ($md -join "`r`n"), (New-Object Text.UTF8Encoding $true))
