@@ -206,8 +206,8 @@ impl EditorApp {
                 if icon_button(ui, Glyph::Plus, "Import", Kind::Secondary, Vec2::ZERO).on_hover_text(tip).clicked() {
                     self.import_dialog();
                 }
-                if self.browser.dir.is_none() && icon_only_button(ui, Glyph::NewFolder, Kind::Ghost, new_folder()).clicked() {
-                    todo.push(Do::Dialog(Dialog::Name { name: "Carpeta nueva".into(), files: Vec::new(), rename: None, error: None }));
+                if self.browser.dir.is_none() && icon_only_button(ui, Glyph::NewFolder, Kind::Ghost, NEW_FOLDER).clicked() {
+                    todo.push(Do::Dialog(Dialog::Name { name: NEW_FOLDER.into(), files: Vec::new(), rename: None, error: None }));
                 }
             });
         });
@@ -389,8 +389,8 @@ impl EditorApp {
                                 }
                             }
                             ui.separator();
-                            if ui.button(format!("{}…", new_folder())).clicked() {
-                                todo.push(Do::Dialog(Dialog::Name { name: new_folder().into(), files: paths.clone(), rename: None, error: None }));
+                            if ui.button(format!("{NEW_FOLDER}…")).clicked() {
+                                todo.push(Do::Dialog(Dialog::Name { name: NEW_FOLDER.into(), files: paths.clone(), rename: None, error: None }));
                                 ui.close_menu();
                             }
                         });
@@ -644,7 +644,7 @@ impl EditorApp {
                 confirm(ctx, &title, &lines, "Delete", &mut action)
             }
             Dialog::Name { name, rename, error, .. } => {
-                let title = if rename.is_some() { "Rename" } else { new_folder() };
+                let title = if rename.is_some() { "Rename" } else { NEW_FOLDER };
                 let ok = if rename.is_some() { "Save" } else { "Create" };
                 let sub = "It's created inside the clips folder.";
                 modal(ctx, "lib_name", title, sub, 460.0, |ui| {
@@ -694,9 +694,8 @@ fn add_label() -> &'static str {
     "Add to the timeline"
 }
 
-fn new_folder() -> &'static str {
-    "New folder"
-}
+/// Nombre que se propone para una carpeta nueva.
+const NEW_FOLDER: &str = "New folder";
 
 /// "Está en la línea de tiempo…" para `used` videos que se van a quitar de ahí (`these`: de los elegidos;
 /// si no, de los de una carpeta).
