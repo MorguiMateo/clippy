@@ -4,6 +4,10 @@
 //!   `CLIPPY_TEST_ALIGN16=1`, el encoder falla con tamaños que no son múltiplo de 16 (`--test 8 <carpeta> 766`).
 //!   Con `CLIPPY_TEST_LOST=<segundos>`, a esos segundos se pierde la placa una vez, como en un reinicio del driver.
 //!   Con `CLIPPY_TEST_STALL=<segundos>`, pasado ese tiempo la captura se traba (la duplicación se pierde apenas se abre).
+//!   Con `CLIPPY_TEST_HIDDEN=1` hace de cuenta que hay un juego adelante y no llega ninguna imagen después de la primera;
+//!   con `CLIPPY_TEST_COVERED=1`, además llega una que cambia todo el monitor cada 2 s, como con el juego tapado por el
+//!   escritorio (`--test 70`: tiene que avisar y no dejar de avisar). Con `CLIPPY_LOG_FRAMES=1`, con un juego adelante
+//!   anota cada segundo en el log cuántas imágenes llegan y cuántas son del juego.
 //! - `--test-soak <minutos> <carpeta> [escenario] [segundos entre clips]`: graba un rato largo midiéndose a sí mismo y
 //!   escribe un informe de rendimiento y fugas (ver `perf`).
 //! - `--test-restart [vueltas] <carpeta>`: arranca y cierra la grabadora varias veces en el mismo proceso y cuenta los

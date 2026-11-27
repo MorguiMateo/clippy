@@ -144,10 +144,14 @@ fn hidden_reason(game: Option<&str>, mode_changed: bool) -> String {
             "{g} is in exclusive full screen, so Windows doesn't show it to Clippy and clips only have the desktop. Set {g}'s display mode to borderless or windowed fullscreen."
         ),
         (None, true) => "The game is in exclusive full screen, so Windows doesn't show it to Clippy and clips only have the desktop. Set its display mode to borderless or windowed fullscreen.".into(),
-        (g, false) => format!(
-            "Windows isn't showing {} to Clippy, so clips only have the desktop. Clippy keeps trying by itself.",
-            g.unwrap_or("the game")
-        ),
+        // Sin bordes: Windows muestra el juego en una capa aparte de la pantalla, y Desktop Duplication ve el escritorio
+        // de abajo. Se decide cuando el juego toma la pantalla, por eso reiniciarlo suele arreglarlo.
+        (g, false) => {
+            let g = g.unwrap_or("the game");
+            format!(
+                "Windows is showing {g} on a separate display layer that Clippy can't capture, so clips only have the desktop. Restarting {g} usually fixes it."
+            )
+        }
     }
 }
 
@@ -538,19 +542,22 @@ fn session(
             let front = au.game.in_front() && gm == Some(cap.monitor());
             #[cfg(feature = "devtools")]
             let front = front || super::capture::test_hidden_game();
-            // Un juego adelante manda imágenes todo el tiempo. Si no llega ninguna, la captura quedó trabada (puede
-            // pasar al volver de un Alt+Tab con resolución estirada): reabrirla con el mismo dispositivo no alcanza y
-            // el video repetiría la última imagen para siempre. Se empieza de nuevo, como al cambiar un ajuste de video.
-            // Si nunca anduvo, o ya se reinició y sigue igual, Windows no le pasa el juego a Clippy (pantalla completa
-            // exclusiva): se avisa y se reintenta cada vez más espaciado, sin perder el buffer en cada traba.
+            // Un juego adelante manda imágenes todo el tiempo, y cada una cambia el monitor entero. Si no llegan, la
+            // captura quedó trabada (puede pasar al volver de un Alt+Tab con resolución estirada): reabrirla con el
+            // mismo dispositivo no alcanza y el video repetiría la última imagen para siempre. Se empieza de nuevo, como
+            // al cambiar un ajuste de video. Si nunca anduvo, o ya se reinició y sigue igual, Windows no le pasa el
+            // juego a Clippy (pantalla completa exclusiva, o el juego en una capa aparte y solo llegan las imágenes del
+            // escritorio de abajo): se avisa y se reintenta cada vez más espaciado, sin perder el buffer en cada traba.
             if front {
                 let since = *front_since.get_or_insert(now);
+                #[cfg(feature = "devtools")]
+                cap.log_rate(now);
                 if cap.flowing(now, since) {
                     unhide(target, notify, &format!("llegan imágenes del juego otra vez en {}", cap.describe()));
                 } else if let Some(lost) = cap.stalled(now, since) {
                     if cap.worked() && target.hidden.is_none() {
                         log(&format!(
-                            "el juego está adelante y no llegan imágenes nuevas de {} (se perdió {lost} veces): se reinicia la captura",
+                            "el juego está adelante y no llegan sus imágenes de {} (se perdió {lost} veces): se reinicia la captura",
                             cap.describe()
                         ));
                         return Ok(End::Restart(cap.monitor()));
@@ -560,9 +567,9 @@ fn session(
                             let game = au.game.name();
                             let changed = cap.mode_changed();
                             log(&format!(
-                                "el juego está adelante y no llegan imágenes nuevas de {} (se perdió {lost} veces; {}): se avisa y se reintenta en {} s",
+                                "el juego está adelante y no llegan sus imágenes de {} (se perdió {lost} veces; {}): se avisa y se reintenta en {} s",
                                 cap.describe(),
-                                if changed { "el modo de video no es el del escritorio, pantalla completa exclusiva" } else { "el modo de video es el del escritorio" },
+                                if changed { "el modo de video no es el del escritorio, pantalla completa exclusiva" } else { "el modo de video es el del escritorio: el juego estaría en una capa aparte" },
                                 HIDDEN_RETRY.as_secs()
                             ));
                             notify(Event::GameHidden(Some(hidden_reason(game.as_deref(), changed))));
@@ -583,6 +590,8 @@ fn session(
                 }
             } else {
                 front_since = None;
+                #[cfg(feature = "devtools")]
+                cap.log_rate_stop();
             }
         }
         let visible = cfg.capture_mode == CaptureMode::Screen || (au.game.visible() && game_on_cap);
