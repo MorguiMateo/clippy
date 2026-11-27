@@ -234,6 +234,9 @@ impl App {
             if let Some(g) = &self.status.game {
                 t.push_str(&format!(" · game: {g}"));
             }
+            if self.status.hidden.is_some() {
+                t.push_str(" · can't see the game");
+            }
             t
         } else {
             "Clippy · paused".into()
@@ -286,7 +289,10 @@ impl App {
             Some(g) => format!("{g} · last {secs}"),
             None => format!("Last {secs}"),
         };
-        self.notify("Clip saved", &format!("{what}. Click to open it in the editor."), NIIF_INFO | NIIF_NOSOUND);
+        match &self.status.hidden {
+            Some(why) => self.notify("Clip saved without the game", &format!("{why} Click to open it in the editor."), NIIF_WARNING | NIIF_NOSOUND),
+            None => self.notify("Clip saved", &format!("{what}. Click to open it in the editor."), NIIF_INFO | NIIF_NOSOUND),
+        }
         self.balloon_clip = Some(clip);
     }
 
@@ -315,12 +321,21 @@ impl App {
     fn handle_event(&mut self, ev: Event) {
         match ev {
             Event::Started(d) => {
-                self.set_status(Status { device: Some(d), error: None, game: self.status.game.clone() });
+                self.set_status(Status { device: Some(d), error: None, ..self.status.clone() });
                 self.tray(NIM_MODIFY);
             }
             Event::Game(game) => {
                 self.set_status(Status { game, ..self.status.clone() });
                 self.tray(NIM_MODIFY);
+            }
+            Event::GameHidden(hidden) => {
+                // El globo sale al dejar de verse el juego, no si cambia el motivo ni en cada reintento.
+                let new = self.status.hidden.is_none() && hidden.is_some();
+                self.set_status(Status { hidden: hidden.clone(), ..self.status.clone() });
+                self.tray(NIM_MODIFY);
+                if let Some(why) = hidden.filter(|_| new) {
+                    self.balloon("Clippy can't see the game", &why, true);
+                }
             }
             // El sonido lo reproduce la grabadora al instante; acá, la notificación.
             Event::Saved(p) => self.saved(p),
@@ -328,7 +343,7 @@ impl App {
             Event::Error(e) => {
                 // El globo sale al pasar de grabar a error, no si cambia el motivo mientras se reintenta.
                 let new = self.status.error.is_none();
-                self.set_status(Status { device: None, error: Some(e.clone()), game: self.status.game.clone() });
+                self.set_status(Status { device: None, error: Some(e.clone()), ..self.status.clone() });
                 self.tray(NIM_MODIFY);
                 if new {
                     self.balloon(

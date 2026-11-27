@@ -88,6 +88,8 @@ pub struct Capture {
     out: Output,
     dup: Option<IDXGIOutputDuplication>,
     rotation: DXGI_MODE_ROTATION,
+    /// El modo de video del monitor al abrir la duplicación (un juego en pantalla completa exclusiva pone el suyo).
+    mode: (u32, u32),
     /// La forma del panel si Windows estira la imagen hasta llenarlo (None si la encaja con bandas o no se sabe).
     stretch: Option<(u32, u32)>,
     retry_at: i64,
@@ -174,6 +176,7 @@ impl Capture {
                 out,
                 dup: None,
                 rotation: DXGI_MODE_ROTATION::default(),
+                mode: (0, 0),
                 stretch: None,
                 retry_at: 0,
                 failing_since: None,
@@ -200,6 +203,18 @@ impl Capture {
     /// cuántas veces se perdió la duplicación en ese tiempo.
     pub fn stalled(&self, now: i64, since: i64) -> Option<u32> {
         (now - self.last_new.max(since) > STALL).then_some(self.dup_lost)
+    }
+
+    /// Las imágenes llegan de nuevo: desde `since` pasó más de `STALL` y la última nueva es de hace menos.
+    pub fn flowing(&self, now: i64, since: i64) -> bool {
+        now - since > STALL && now - self.last_new <= STALL
+    }
+
+    /// El modo de video del monitor no es el del escritorio guardado en el registro (ni girado): lo puso un juego en
+    /// pantalla completa exclusiva, y Desktop Duplication no ve lo que dibuja.
+    pub fn mode_changed(&self) -> bool {
+        let (w, h) = self.mode;
+        screen::desktop(&self.out.name).is_some_and(|d| d != (w, h) && d != (h, w))
     }
 
     /// La sesión llegó a capturar (si después se traba, es que algo la trabó, no que nunca anduvo).
@@ -243,7 +258,9 @@ impl Capture {
     fn open(&mut self) -> Result<()> {
         self.dup = None;
         let dup = unsafe { self.out.output.DuplicateOutput(&self.device)? };
-        self.rotation = unsafe { dup.GetDesc() }.Rotation;
+        let desc = unsafe { dup.GetDesc() };
+        self.rotation = desc.Rotation;
+        self.mode = (desc.ModeDesc.Width, desc.ModeDesc.Height);
         self.dup = Some(dup);
         if let Some(c) = &mut self.cursor {
             c.reset();
@@ -390,7 +407,7 @@ impl Capture {
         let mut res: Option<IDXGIResource> = None;
         let got = unsafe { dup.AcquireNextFrame(0, &mut info, &mut res) };
         #[cfg(feature = "devtools")]
-        let got = test_stall(now, got, &dup);
+        let got = test_hidden(test_stall(now, got, &dup), &dup, self.new_frames);
         match got {
             Ok(()) => {
                 if let Some(c) = &mut self.cursor {
@@ -500,6 +517,26 @@ fn test_stall(now: i64, got: windows::core::Result<()>, dup: &IDXGIOutputDuplica
         }
     }
     Err(DXGI_ERROR_ACCESS_LOST.into())
+}
+
+/// Prueba (CLIPPY_TEST_HIDDEN=1): un juego en pantalla completa exclusiva adelante en el monitor que se graba. Desktop
+/// Duplication no recibe nada después de la primera imagen de cada sesión, como con VALORANT a resolución estirada.
+#[cfg(feature = "devtools")]
+pub fn test_hidden_game() -> bool {
+    std::env::var_os("CLIPPY_TEST_HIDDEN").is_some()
+}
+
+#[cfg(feature = "devtools")]
+fn test_hidden(got: windows::core::Result<()>, dup: &IDXGIOutputDuplication, new_frames: u32) -> windows::core::Result<()> {
+    if !test_hidden_game() || new_frames == 0 {
+        return got;
+    }
+    if got.is_ok() {
+        unsafe {
+            let _ = dup.ReleaseFrame();
+        }
+    }
+    Err(DXGI_ERROR_WAIT_TIMEOUT.into())
 }
 
 /// Monitores conectados al escritorio que ve esta GPU.

@@ -47,6 +47,9 @@ pub enum Event {
     Error(String),
     /// Cambió el juego detectado (nombre del ejecutable sin ".exe").
     Game(Option<String>),
+    /// El juego está adelante y Windows no le pasa sus imágenes a Clippy: los clips solo tienen el escritorio. Lleva
+    /// el motivo, o None cuando se ve de nuevo o cambia el juego.
+    GameHidden(Option<String>),
 }
 
 pub type Notify = Arc<dyn Fn(Event) + Send + Sync>;
@@ -110,6 +113,42 @@ struct Target {
     monitor: Option<HMONITOR>,
     /// Los que hicieron perder la placa al pasar a ellos: no se vuelven a probar.
     lost_on: Vec<HMONITOR>,
+    /// El juego está adelante y no llegan sus imágenes (ya se avisó). Sigue entre sesiones: reiniciar no lo arregla
+    /// enseguida, así que se reintenta cada vez más espaciado.
+    hidden: Option<Hidden>,
+}
+
+struct Hidden {
+    /// El juego del aviso: si cambia, el aviso ya no vale.
+    game: Option<String>,
+    retry_at: Instant,
+    wait: Duration,
+}
+
+/// Con el juego oculto, cuánto se espera hasta el primer reintento y hasta cuánto se va duplicando la espera.
+const HIDDEN_RETRY: Duration = Duration::from_secs(30);
+const HIDDEN_RETRY_MAX: Duration = Duration::from_secs(300);
+
+/// Deja de avisar que no se ve el juego (`why` va al log).
+fn unhide(target: &mut Target, notify: &Notify, why: &str) {
+    if target.hidden.take().is_some() {
+        log(&format!("{why}: se deja de avisar que no se ve el juego"));
+        notify(Event::GameHidden(None));
+    }
+}
+
+/// Por qué los clips no tienen el juego, para la pantalla.
+fn hidden_reason(game: Option<&str>, mode_changed: bool) -> String {
+    match (game, mode_changed) {
+        (Some(g), true) => format!(
+            "{g} is in exclusive full screen, so Windows doesn't show it to Clippy and clips only have the desktop. Set {g}'s display mode to borderless or windowed fullscreen."
+        ),
+        (None, true) => "The game is in exclusive full screen, so Windows doesn't show it to Clippy and clips only have the desktop. Set its display mode to borderless or windowed fullscreen.".into(),
+        (g, false) => format!(
+            "Windows isn't showing {} to Clippy, so clips only have the desktop. Clippy keeps trying by itself.",
+            g.unwrap_or("the game")
+        ),
+    }
 }
 
 /// Cada cuánto se vuelve a intentar grabar después de un error.
@@ -127,7 +166,7 @@ fn thread_main(mut cfg: Config, rx: Receiver<Cmd>, notify: Notify) {
     let mut align = false;
     loop {
         let mut untested = None;
-        match session(&mut cfg, &rx, &notify, &target, &mut failing, align, &mut untested) {
+        match session(&mut cfg, &rx, &notify, &mut target, &mut failing, align, &mut untested) {
             Ok(End::Stop) => break,
             Ok(End::Restart(m)) => target.monitor = Some(m),
             Ok(End::Lost { on, back }) => {
@@ -372,7 +411,7 @@ fn session(
     cfg: &mut Config,
     rx: &Receiver<Cmd>,
     notify: &Notify,
-    target: &Target,
+    target: &mut Target,
     failing: &mut Option<String>,
     align: bool,
     untested: &mut Option<(u32, u32)>,
@@ -439,9 +478,8 @@ fn session(
     let mut next_frame = 0i64;
     let mut packets: VecDeque<Packet> = VecDeque::new();
     let mut out = Vec::new();
-    // Desde cuándo el juego está adelante en el monitor que se graba, y si ya se avisó que ahí no llegan imágenes.
+    // Desde cuándo el juego está adelante en el monitor que se graba.
     let mut front_since: Option<i64> = None;
-    let mut stall_told = false;
     #[cfg(feature = "devtools")]
     let mut perf = crate::perf::Loop::default();
 
@@ -494,22 +532,53 @@ fn session(
                 }
             }
             game_on_cap = game_at == Some(cap.monitor());
+            if target.hidden.as_ref().is_some_and(|h| h.game != au.game.name()) {
+                unhide(target, notify, "cambió el juego");
+            }
+            let front = au.game.in_front() && gm == Some(cap.monitor());
+            #[cfg(feature = "devtools")]
+            let front = front || super::capture::test_hidden_game();
             // Un juego adelante manda imágenes todo el tiempo. Si no llega ninguna, la captura quedó trabada (puede
             // pasar al volver de un Alt+Tab con resolución estirada): reabrirla con el mismo dispositivo no alcanza y
             // el video repetiría la última imagen para siempre. Se empieza de nuevo, como al cambiar un ajuste de video.
-            if au.game.in_front() && gm == Some(cap.monitor()) {
+            // Si nunca anduvo, o ya se reinició y sigue igual, Windows no le pasa el juego a Clippy (pantalla completa
+            // exclusiva): se avisa y se reintenta cada vez más espaciado, sin perder el buffer en cada traba.
+            if front {
                 let since = *front_since.get_or_insert(now);
-                if let Some(lost) = cap.stalled(now, since) {
-                    if cap.worked() {
+                if cap.flowing(now, since) {
+                    unhide(target, notify, &format!("llegan imágenes del juego otra vez en {}", cap.describe()));
+                } else if let Some(lost) = cap.stalled(now, since) {
+                    if cap.worked() && target.hidden.is_none() {
                         log(&format!(
                             "el juego está adelante y no llegan imágenes nuevas de {} (se perdió {lost} veces): se reinicia la captura",
                             cap.describe()
                         ));
                         return Ok(End::Restart(cap.monitor()));
                     }
-                    // Nunca llegó a capturar: reiniciar una y otra vez no lo arreglaría. Queda en el log.
-                    if !std::mem::replace(&mut stall_told, true) {
-                        log(&format!("el juego está adelante y no llegan imágenes nuevas de {} (se perdió {lost} veces)", cap.describe()));
+                    match &mut target.hidden {
+                        None => {
+                            let game = au.game.name();
+                            let changed = cap.mode_changed();
+                            log(&format!(
+                                "el juego está adelante y no llegan imágenes nuevas de {} (se perdió {lost} veces; {}): se avisa y se reintenta en {} s",
+                                cap.describe(),
+                                if changed { "el modo de video no es el del escritorio, pantalla completa exclusiva" } else { "el modo de video es el del escritorio" },
+                                HIDDEN_RETRY.as_secs()
+                            ));
+                            notify(Event::GameHidden(Some(hidden_reason(game.as_deref(), changed))));
+                            target.hidden = Some(Hidden { game, retry_at: Instant::now() + HIDDEN_RETRY, wait: HIDDEN_RETRY });
+                        }
+                        Some(h) if Instant::now() >= h.retry_at => {
+                            h.wait = (h.wait * 2).min(HIDDEN_RETRY_MAX);
+                            h.retry_at = Instant::now() + h.wait;
+                            log(&format!(
+                                "sigue sin verse el juego en {}: se reinicia la captura (próximo intento en {} s)",
+                                cap.describe(),
+                                h.wait.as_secs()
+                            ));
+                            return Ok(End::Restart(cap.monitor()));
+                        }
+                        Some(_) => {}
                     }
                 }
             } else {

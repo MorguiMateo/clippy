@@ -18,6 +18,9 @@ pub struct Status {
     /// Juego que detectó la grabadora (lo muestran el tooltip de la bandeja y la ventana principal).
     #[serde(default)]
     pub game: Option<String>,
+    /// Por qué los clips no tienen el juego (Windows no le pasa sus imágenes a Clippy; se reintenta solo).
+    #[serde(default)]
+    pub hidden: Option<String>,
 }
 
 fn file() -> PathBuf {
