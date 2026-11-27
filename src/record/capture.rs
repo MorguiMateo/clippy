@@ -25,12 +25,12 @@ const QUICK_FOR: i64 = 30_000_000;
 const RETRY: i64 = 50_000_000;
 
 /// Un juego adelante manda imágenes todo el tiempo y cada una cambia el monitor entero. Si en este lapso llegan menos de
-/// `GAME_MIN` así, no se está viendo el juego: la captura quedó trabada, o Windows muestra el juego en una capa aparte y
-/// solo llegan las del escritorio de abajo (100 ns).
+/// `GAME_MIN` así, no se está viendo el juego: la captura quedó trabada, o el juego no se deja capturar y solo llegan las
+/// del escritorio de atrás (100 ns).
 const STALL: i64 = 50_000_000;
-/// 1 por segundo: muy por debajo de un juego en el menú con los fps limitados y muy por encima de lo que el escritorio
+/// 5 por segundo: muy por debajo de un juego en el menú con los fps limitados y muy por encima de lo que el escritorio
 /// se repinta entero (casi nunca: cambian el reloj o una ventana).
-const GAME_MIN: usize = 5;
+const GAME_MIN: usize = 25;
 /// Qué parte del monitor tiene que cambiar en una imagen para que sea del juego (en décimos).
 const GAME_COVER: u64 = 9;
 /// Imágenes del juego que tiene que haber recibido una sesión para darla por andando (2 s a 60 fps).
@@ -587,7 +587,7 @@ fn test_stall(now: i64, got: windows::core::Result<()>, dup: &IDXGIOutputDuplica
 /// Prueba (CLIPPY_TEST_HIDDEN=1): un juego adelante en el monitor que se graba que Windows no le pasa a Clippy.
 /// Desktop Duplication no recibe nada después de la primera imagen de cada sesión, como con una captura trabada.
 /// Prueba (CLIPPY_TEST_COVERED=1): lo mismo, pero cada `COVERED_EVERY` llega una imagen que cambia todo el monitor,
-/// como con el juego en una capa aparte y el escritorio de abajo que se repinta (VALORANT sin bordes).
+/// como con un juego que no se deja capturar y el escritorio de atrás que se repinta.
 #[cfg(feature = "devtools")]
 pub fn test_hidden_game() -> bool {
     std::env::var_os("CLIPPY_TEST_HIDDEN").is_some() || test_covered()
