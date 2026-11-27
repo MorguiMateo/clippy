@@ -52,9 +52,12 @@ impl SettingsApp {
             if self.main_running {
                 // Si no puede grabar se ve acá, en todas las páginas, con el motivo (la bandeja avisa una sola vez).
                 let error = self.recorder.error.clone().filter(|_| self.cfg.enabled);
+                let hidden = self.recorder.hidden.clone().filter(|_| self.cfg.enabled && error.is_none());
                 ui.horizontal(|ui| {
                     let (txt, dot, col) = if error.is_some() {
                         ("Can't record", DANGER, DANGER)
+                    } else if hidden.is_some() {
+                        ("Can't see the game", DANGER, DANGER)
                     } else if self.cfg.enabled {
                         ("Recording", REC, TEXT)
                     } else {
@@ -68,6 +71,8 @@ impl SettingsApp {
                 });
                 let sub = if let Some(e) = error {
                     format!("{e} Clippy keeps trying by itself.")
+                } else if let Some(h) = hidden {
+                    h
                 } else if self.cfg.enabled {
                     let (key, secs) = (hotkey_name(self.cfg.hotkey_vk, self.cfg.hotkey_mods), fmt_secs(self.cfg.seconds));
                     match self.recording_game() {

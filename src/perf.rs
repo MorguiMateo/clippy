@@ -569,6 +569,8 @@ pub fn soak(args: &[String]) -> i32 {
             match e {
                 Event::Started(d) => encoder = format!("{d:?}"),
                 Event::Game(g) => log.push(format!("{t:.0} s: juego {}", g.as_deref().unwrap_or("ninguno"))),
+                Event::GameHidden(Some(m)) => log.push(format!("{t:.0} s: no se ve el juego: {m}")),
+                Event::GameHidden(None) => log.push(format!("{t:.0} s: se ve el juego otra vez")),
                 Event::Saved(_) => (saving, ok) = (false, ok + 1),
                 Event::SaveFailed(m) => {
                     saving = false;
