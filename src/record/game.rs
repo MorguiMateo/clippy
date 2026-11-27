@@ -16,7 +16,8 @@ use windows::Win32::System::Threading::{
     GetExitCodeProcess, OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetClassNameW, GetForegroundWindow, GetWindowRect, GetWindowThreadProcessId, IsIconic, IsWindow, IsZoomed,
+    GetClassNameW, GetForegroundWindow, GetWindowDisplayAffinity, GetWindowRect, GetWindowThreadProcessId, IsIconic, IsWindow,
+    IsZoomed, WDA_NONE,
 };
 
 /// Programas fuera de la carpeta de Windows que pueden estar en pantalla completa sin ser juegos (en minúsculas,
@@ -129,6 +130,16 @@ impl Detector {
     /// El juego está adelante en pantalla completa ahora mismo (ahí manda imágenes todo el tiempo).
     pub fn in_front(&self) -> bool {
         self.in_front
+    }
+
+    /// El juego le pidió a Windows que no se capture su ventana (`SetWindowDisplayAffinity`): Desktop Duplication ve lo
+    /// que hay detrás (el escritorio, Discord) y Windows.Graphics.Capture se niega. Ninguna captura lo puede ver sin
+    /// meterse en el juego, que es lo que un anticheat castiga. VALORANT lo hace a veces en medio de una partida y no lo
+    /// deshace hasta que se reinicia.
+    pub fn blocks_capture(&self) -> bool {
+        let Some(g) = &self.game else { return false };
+        let mut affinity = 0u32;
+        unsafe { GetWindowDisplayAffinity(g.window, &mut affinity) }.is_ok() && affinity != WDA_NONE.0
     }
 
     /// El juego se ve en su monitor: está adelante, o la ventana activa está en otro monitor

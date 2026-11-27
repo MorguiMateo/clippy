@@ -5,7 +5,9 @@
 
 use anyhow::{anyhow, Result};
 use windows::core::Interface;
-use windows::Win32::Foundation::{HMODULE, LUID, POINT};
+use std::collections::VecDeque;
+
+use windows::Win32::Foundation::{HMODULE, LUID, POINT, RECT};
 use windows::Win32::Graphics::Direct3D::{D3D_DRIVER_TYPE_UNKNOWN, D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_11_1};
 use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Dxgi::Common::{DXGI_MODE_ROTATION, DXGI_MODE_ROTATION_ROTATE270, DXGI_MODE_ROTATION_ROTATE90};
@@ -22,9 +24,16 @@ const QUICK_RETRY: i64 = 2_500_000;
 const QUICK_FOR: i64 = 30_000_000;
 const RETRY: i64 = 50_000_000;
 
-/// Un juego adelante manda imágenes todo el tiempo: si pasa esto sin ninguna nueva, la captura quedó trabada (100 ns).
+/// Un juego adelante manda imágenes todo el tiempo y cada una cambia el monitor entero. Si en este lapso llegan menos de
+/// `GAME_MIN` así, no se está viendo el juego: la captura quedó trabada, o el juego no se deja capturar y solo llegan las
+/// del escritorio de atrás (100 ns).
 const STALL: i64 = 50_000_000;
-/// Imágenes nuevas que tiene que haber recibido una sesión para darla por andando (2 s a 60 fps).
+/// 5 por segundo: muy por debajo de un juego en el menú con los fps limitados y muy por encima de lo que el escritorio
+/// se repinta entero (casi nunca: cambian el reloj o una ventana).
+const GAME_MIN: usize = 25;
+/// Qué parte del monitor tiene que cambiar en una imagen para que sea del juego (en décimos).
+const GAME_COVER: u64 = 9;
+/// Imágenes del juego que tiene que haber recibido una sesión para darla por andando (2 s a 60 fps).
 const WORKED: u32 = 120;
 
 /// Qué hizo `Capture::aim`.
@@ -101,11 +110,15 @@ pub struct Capture {
     skipped: Option<HMONITOR>,
     /// Monitores que hicieron perder la placa al pasar a ellos: no se vuelven a probar.
     lost_on: Vec<HMONITOR>,
-    /// Imágenes nuevas recibidas en la sesión (hasta `WORKED`), cuándo llegó la última y cuántas veces se perdió
-    /// la duplicación desde entonces.
-    new_frames: u32,
-    last_new: i64,
+    /// Imágenes del juego (ver `GAME_COVER`) recibidas en la sesión (hasta `WORKED`), cuándo llegaron las últimas
+    /// `GAME_MIN` y cuántas veces se perdió la duplicación desde la última imagen nueva.
+    game_frames: u32,
+    game_at: VecDeque<i64>,
     dup_lost: u32,
+    /// Para leer qué partes cambiaron en cada imagen (`GetFrameDirtyRects`) sin pedir memoria cada vez.
+    dirty: Vec<RECT>,
+    #[cfg(feature = "devtools")]
+    stats: Stats,
     /// Se pidió el cursor (`set_cursor`) y con qué se dibuja (None si apagado o si no se pudo preparar).
     cursor_on: bool,
     cursor: Option<Cursor>,
@@ -183,9 +196,12 @@ impl Capture {
                 failing: false,
                 skipped: None,
                 lost_on: lost_on.to_vec(),
-                new_frames: 0,
-                last_new: 0,
+                game_frames: 0,
+                game_at: VecDeque::with_capacity(GAME_MIN + 1),
                 dup_lost: 0,
+                dirty: Vec::new(),
+                #[cfg(feature = "devtools")]
+                stats: Stats::default(),
                 cursor_on: false,
                 cursor: None,
             };
@@ -199,15 +215,56 @@ impl Capture {
         self.out.monitor
     }
 
-    /// Si desde `since` (o desde la última imagen nueva, si es después) pasaron `STALL` sin ninguna imagen nueva,
-    /// cuántas veces se perdió la duplicación en ese tiempo.
+    /// Con el juego adelante desde `since`: si hace más de `STALL` y no llegan sus imágenes (menos de `GAME_MIN` en los
+    /// últimos `STALL`), cuántas veces se perdió la duplicación desde la última imagen nueva.
     pub fn stalled(&self, now: i64, since: i64) -> Option<u32> {
-        (now - self.last_new.max(since) > STALL).then_some(self.dup_lost)
+        (now - since > STALL && !self.sees_game(now)).then_some(self.dup_lost)
     }
 
-    /// Las imágenes llegan de nuevo: desde `since` pasó más de `STALL` y la última nueva es de hace menos.
+    /// Con el juego adelante desde `since`: hace más de `STALL` y llegan sus imágenes. Unas sueltas del escritorio,
+    /// aunque lo cambien entero, no alcanzan.
     pub fn flowing(&self, now: i64, since: i64) -> bool {
-        now - since > STALL && now - self.last_new <= STALL
+        now - since > STALL && self.sees_game(now)
+    }
+
+    fn sees_game(&self, now: i64) -> bool {
+        self.game_at.iter().filter(|&&t| now - t <= STALL).count() >= GAME_MIN
+    }
+
+    /// Llegó una imagen nueva; `game` si cambió casi todo el monitor, como cada cuadro de un juego.
+    fn arrived(&mut self, now: i64, game: bool) {
+        self.dup_lost = 0;
+        if game {
+            self.game_frames = (self.game_frames + 1).min(WORKED);
+            self.game_at.push_back(now);
+            if self.game_at.len() > GAME_MIN {
+                self.game_at.pop_front();
+            }
+        }
+    }
+
+    /// La imagen tomada (antes de `ReleaseFrame`) cambió al menos `GAME_COVER` décimos del monitor. Si Windows no dice
+    /// qué cambió, cuenta como del juego: mejor no avisar de más.
+    fn covers(&mut self, dup: &IDXGIOutputDuplication, info: &DXGI_OUTDUPL_FRAME_INFO) -> bool {
+        if info.TotalMetadataBufferSize == 0 {
+            return true;
+        }
+        let size = std::mem::size_of::<RECT>() as u32;
+        let mut need = 0u32;
+        let mut got = unsafe { dup.GetFrameDirtyRects(self.dirty.capacity() as u32 * size, self.dirty.as_mut_ptr(), &mut need) };
+        if got.as_ref().is_err_and(|e| e.code() == DXGI_ERROR_MORE_DATA) {
+            self.dirty.reserve(need.div_ceil(size) as usize);
+            got = unsafe { dup.GetFrameDirtyRects(self.dirty.capacity() as u32 * size, self.dirty.as_mut_ptr(), &mut need) };
+        }
+        if got.is_err() {
+            return true;
+        }
+        // SAFETY: GetFrameDirtyRects escribió `need` bytes de RECT en el buffer, que tiene lugar para todos.
+        unsafe { self.dirty.set_len((need / size) as usize) };
+        // Casi nunca se pisan; si se pisan, se cuentan dos veces (pasa en el escritorio, no en un juego).
+        let area: u64 = self.dirty.iter().map(|r| (r.right - r.left).max(0) as u64 * (r.bottom - r.top).max(0) as u64).sum();
+        self.dirty.clear();
+        area * 10 >= self.mode.0 as u64 * self.mode.1 as u64 * GAME_COVER
     }
 
     /// El modo de video del monitor no es el del escritorio guardado en el registro (ni girado): lo puso un juego en
@@ -217,9 +274,9 @@ impl Capture {
         screen::desktop(&self.out.name).is_some_and(|d| d != (w, h) && d != (h, w))
     }
 
-    /// La sesión llegó a capturar (si después se traba, es que algo la trabó, no que nunca anduvo).
+    /// La sesión llegó a capturar el juego (si después se traba, es que algo la trabó, no que nunca anduvo).
     pub fn worked(&self) -> bool {
-        self.new_frames >= WORKED
+        self.game_frames >= WORKED
     }
 
     /// "\\.\DISPLAY2 (NVIDIA GeForce RTX 2060)", para el log.
@@ -407,7 +464,13 @@ impl Capture {
         let mut res: Option<IDXGIResource> = None;
         let got = unsafe { dup.AcquireNextFrame(0, &mut info, &mut res) };
         #[cfg(feature = "devtools")]
-        let got = test_hidden(test_stall(now, got, &dup), &dup, self.new_frames);
+        let got = test_hidden(test_stall(now, got, &dup), &dup, self.latest.is_some());
+        #[cfg(feature = "devtools")]
+        if test_covered() && self.latest.is_some() && now - self.stats.covered_at >= COVERED_EVERY {
+            // Una imagen suelta del escritorio que lo cambia entero: lo peor que puede llegar con el juego tapado.
+            self.stats.covered_at = now;
+            self.arrived(now, true);
+        }
         match got {
             Ok(()) => {
                 if let Some(c) = &mut self.cursor {
@@ -421,13 +484,15 @@ impl Capture {
                 } else {
                     Ok(())
                 };
+                let game = info.LastPresentTime != 0 && self.covers(&dup, &info);
                 unsafe {
                     let _ = dup.ReleaseFrame();
                 }
                 self.check(r)?;
                 if info.LastPresentTime != 0 {
-                    self.new_frames = (self.new_frames + 1).min(WORKED);
-                    (self.last_new, self.dup_lost) = (now, 0);
+                    #[cfg(feature = "devtools")]
+                    self.stats.add(&info, game);
+                    self.arrived(now, game);
                 }
             }
             Err(e) if e.code() == DXGI_ERROR_WAIT_TIMEOUT => {}
@@ -519,16 +584,83 @@ fn test_stall(now: i64, got: windows::core::Result<()>, dup: &IDXGIOutputDuplica
     Err(DXGI_ERROR_ACCESS_LOST.into())
 }
 
-/// Prueba (CLIPPY_TEST_HIDDEN=1): un juego en pantalla completa exclusiva adelante en el monitor que se graba. Desktop
-/// Duplication no recibe nada después de la primera imagen de cada sesión, como con VALORANT a resolución estirada.
+/// Prueba (CLIPPY_TEST_HIDDEN=1): un juego adelante en el monitor que se graba que Windows no le pasa a Clippy.
+/// Desktop Duplication no recibe nada después de la primera imagen de cada sesión, como con una captura trabada.
+/// Prueba (CLIPPY_TEST_COVERED=1): lo mismo, pero cada `COVERED_EVERY` llega una imagen que cambia todo el monitor,
+/// como con un juego que no se deja capturar y el escritorio de atrás que se repinta.
 #[cfg(feature = "devtools")]
 pub fn test_hidden_game() -> bool {
-    std::env::var_os("CLIPPY_TEST_HIDDEN").is_some()
+    std::env::var_os("CLIPPY_TEST_HIDDEN").is_some() || test_covered()
 }
 
 #[cfg(feature = "devtools")]
-fn test_hidden(got: windows::core::Result<()>, dup: &IDXGIOutputDuplication, new_frames: u32) -> windows::core::Result<()> {
-    if !test_hidden_game() || new_frames == 0 {
+fn test_covered() -> bool {
+    std::env::var_os("CLIPPY_TEST_COVERED").is_some()
+}
+
+#[cfg(feature = "devtools")]
+const COVERED_EVERY: i64 = 20_000_000;
+
+/// Prueba: qué imágenes llegan, para medirlas con el juego adelante (`Capture::log_rate`).
+#[cfg(feature = "devtools")]
+#[derive(Default)]
+struct Stats {
+    /// Desde cuándo se cuenta (None: todavía no se empezó).
+    since: Option<i64>,
+    /// Imágenes nuevas tomadas, cuadros que Windows juntó en ellas y las que cambian casi todo el monitor (del juego).
+    new: u32,
+    accumulated: u32,
+    game: u32,
+    /// Última imagen de mentira de CLIPPY_TEST_COVERED.
+    covered_at: i64,
+}
+
+#[cfg(feature = "devtools")]
+impl Stats {
+    fn add(&mut self, info: &DXGI_OUTDUPL_FRAME_INFO, game: bool) {
+        self.new += 1;
+        self.accumulated += info.AccumulatedFrames;
+        self.game += game as u32;
+    }
+}
+
+#[cfg(feature = "devtools")]
+impl Capture {
+    /// Prueba (CLIPPY_LOG_FRAMES=1): con el juego adelante, cada segundo anota cuántas imágenes llegaron y cuántas
+    /// cambian todo el monitor, para comparar el juego que se ve con el tapado por el escritorio.
+    pub fn log_rate(&mut self, now: i64) {
+        if std::env::var_os("CLIPPY_LOG_FRAMES").is_none() {
+            return;
+        }
+        let Some(since) = self.stats.since else {
+            self.stats = Stats { since: Some(now), covered_at: self.stats.covered_at, ..Default::default() };
+            return;
+        };
+        if now - since < 10_000_000 {
+            return;
+        }
+        let s = &self.stats;
+        let secs = (now - since) as f64 / 1e7;
+        log(&format!(
+            "imágenes con el juego adelante en {}: {:.0}/s nuevas ({:.0}/s cuadros juntados), {:.0}/s cambian todo el monitor; se ve el juego: {}",
+            self.out.name,
+            s.new as f64 / secs,
+            s.accumulated as f64 / secs,
+            s.game as f64 / secs,
+            self.sees_game(now)
+        ));
+        self.stats = Stats { since: Some(now), covered_at: s.covered_at, ..Default::default() };
+    }
+
+    /// Prueba: el juego dejó de estar adelante; la próxima medición empieza de cero.
+    pub fn log_rate_stop(&mut self) {
+        self.stats.since = None;
+    }
+}
+
+#[cfg(feature = "devtools")]
+fn test_hidden(got: windows::core::Result<()>, dup: &IDXGIOutputDuplication, first_taken: bool) -> windows::core::Result<()> {
+    if !test_hidden_game() || !first_taken {
         return got;
     }
     if got.is_ok() {

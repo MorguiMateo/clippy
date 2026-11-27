@@ -4,6 +4,10 @@
 //!   `CLIPPY_TEST_ALIGN16=1`, el encoder falla con tamaños que no son múltiplo de 16 (`--test 8 <carpeta> 766`).
 //!   Con `CLIPPY_TEST_LOST=<segundos>`, a esos segundos se pierde la placa una vez, como en un reinicio del driver.
 //!   Con `CLIPPY_TEST_STALL=<segundos>`, pasado ese tiempo la captura se traba (la duplicación se pierde apenas se abre).
+//!   Con `CLIPPY_TEST_HIDDEN=1` hace de cuenta que hay un juego adelante y no llega ninguna imagen después de la primera;
+//!   con `CLIPPY_TEST_COVERED=1`, además llega una que cambia todo el monitor cada 2 s, como con el juego tapado por el
+//!   escritorio (`--test 70`: tiene que avisar y no dejar de avisar). Con `CLIPPY_LOG_FRAMES=1`, con un juego adelante
+//!   anota cada segundo en el log cuántas imágenes llegan y cuántas son del juego.
 //! - `--test-soak <minutos> <carpeta> [escenario] [segundos entre clips]`: graba un rato largo midiéndose a sí mismo y
 //!   escribe un informe de rendimiento y fugas (ver `perf`).
 //! - `--test-restart [vueltas] <carpeta>`: arranca y cierra la grabadora varias veces en el mismo proceso y cuenta los
@@ -11,9 +15,10 @@
 //! - `--test-mic`: cuánto audio entrega cada micrófono en 3 s.
 //! - `--test-download`: descarga la versión publicada como el botón "Actualizar".
 //! - `--test-export`, `--test-frame`, `--test-strip`, `--test-covers`: ver `editor::devtools`.
-//! - `--test-fullscreen <ancho>x<alto> <segundos> [alttab]`: un juego de mentira en pantalla completa exclusiva (D3D11,
-//!   cambia el modo de video como una resolución estirada) que cambia de color en cada cuadro; con `alttab`, cada 6 s
-//!   sale 2 s y vuelve. Para que cuente como juego, corré una copia del exe con otro nombre ("clippy" no es juego).
+//! - `--test-fullscreen <ancho>x<alto> <segundos> [alttab] [oculto]`: un juego de mentira en pantalla completa exclusiva
+//!   (D3D11, cambia el modo de video como una resolución estirada) que cambia de color en cada cuadro; con `alttab`, cada
+//!   6 s sale 2 s y vuelve; con `oculto`, pide que no se capture su ventana, como VALORANT a veces. Para que cuente como
+//!   juego, corré una copia del exe con otro nombre ("clippy" no es juego).
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -178,6 +183,9 @@ fn test_fullscreen(args: &[String]) -> i32 {
         RegisterClassW(&WNDCLASSW { lpfnWndProc: Some(proc), hInstance: inst.into(), lpszClassName: class, ..Default::default() });
         let hwnd = CreateWindowExW(WINDOW_EX_STYLE(0), class, class, WS_POPUP | WS_VISIBLE, 0, 0, w as i32, h as i32, None, None, inst, None).unwrap();
         let _ = SetForegroundWindow(hwnd);
+        if args.iter().any(|a| a == "oculto") {
+            println!("no se deja capturar: {:?}", SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE));
+        }
         let mode = DXGI_MODE_DESC {
             Width: w,
             Height: h,
@@ -214,7 +222,7 @@ fn test_fullscreen(args: &[String]) -> i32 {
         println!("pantalla completa: {:?}", sc.SetFullscreenState(true, None));
         println!("modo {w}x{h}: {:?}", sc.ResizeTarget(&mode));
         // Con "alttab", cada 6 s sale 2 s de la pantalla completa (minimizado), como un Alt+Tab, y vuelve.
-        let alttab = args.get(2).is_some_and(|a| a == "alttab");
+        let alttab = args.iter().any(|a| a == "alttab");
         let mut out = false;
         let start = std::time::Instant::now();
         let mut frame = 0u64;
